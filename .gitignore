@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.env.local
+agent-progress/
+*.log
+.DS_Store

@@ -1,0 +1,54 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: cgs-agent-shell
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: '1'
+        autoscaling.knative.dev/maxScale: '3'
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/timeout: '3600'
+    spec:
+      serviceAccountName: cgs-agent-shell-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: gcr.io/PROJECT_ID/cgs-agent-shell:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            limits:
+              cpu: '2'
+              memory: 2Gi
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: AGENT_MODEL
+              value: claude-sonnet-4-6
+            - name: GCP_PROJECT_ID
+              value: PROJECT_ID
+            - name: GCP_REGION
+              value: us-central1
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: anthropic-api-key, key: latest }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: database-url, key: latest }
+            - name: REDIS_HOST
+              valueFrom:
+                secretKeyRef: { name: redis-host, key: latest }
+            - name: REDIS_PORT
+              valueFrom:
+                secretKeyRef: { name: redis-port, key: latest }
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: redis-password, key: latest }
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef: { name: langfuse-public-key, key: latest }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: langfuse-secret-key, key: latest }
