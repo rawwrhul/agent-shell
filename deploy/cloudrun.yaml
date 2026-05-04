@@ -15,7 +15,7 @@ spec:
     spec:
       serviceAccountName: cgs-agent-shell-sa@cgs-agent-shell-495221.iam.gserviceaccount.com
       containers:
-        - image: gcr.io/cgs-agent-shell-495221/cgs-agent-shell:latest
+        - image: us-central1-docker.pkg.dev/cgs-agent-shell-495221/cgs-agent-shell/shell:latest
           ports:
             - containerPort: 3000
           resources:
