@@ -13,9 +13,9 @@ spec:
         run.googleapis.com/execution-environment: gen2
         run.googleapis.com/timeout: '3600'
     spec:
-      serviceAccountName: cgs-agent-shell-sa@PROJECT_ID.iam.gserviceaccount.com
+      serviceAccountName: cgs-agent-shell-sa@cgs-agent-shell-495221.iam.gserviceaccount.com
       containers:
-        - image: gcr.io/PROJECT_ID/cgs-agent-shell:latest
+        - image: gcr.io/cgs-agent-shell-495221/cgs-agent-shell:latest
           ports:
             - containerPort: 3000
           resources:
@@ -27,8 +27,8 @@ spec:
               value: production
             - name: AGENT_MODEL
               value: claude-sonnet-4-6
-            - name: GCP_PROJECT_ID
-              value: PROJECT_ID
+            - name: GCP_cgs-agent-shell-495221
+              value: cgs-agent-shell-495221
             - name: GCP_REGION
               value: us-central1
             - name: ANTHROPIC_API_KEY
