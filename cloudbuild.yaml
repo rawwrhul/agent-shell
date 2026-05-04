@@ -1,0 +1,29 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:latest
+      - -f
+      - deploy/Dockerfile
+      - .
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - push
+      - --all-tags
+      - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - replace
+      - deploy/cloudrun.yaml
+      - --region=us-central1
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
+  - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:latest
+options:
+  logging: LEGACY
