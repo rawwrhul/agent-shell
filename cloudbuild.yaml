@@ -18,10 +18,11 @@ steps:
     entrypoint: gcloud
     args:
       - run
-      - services
-      - replace
-      - deploy/cloudrun.yaml
+      - deploy
+      - cgs-agent-shell
+      - --image=us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
       - --region=us-central1
+      - --platform=managed
 images:
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:latest
