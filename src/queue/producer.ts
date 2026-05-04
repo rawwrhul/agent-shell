@@ -4,7 +4,7 @@ import { config }   from '../config'
 import { AgentTask, AgentJob } from '../types'
 import { logger }   from '../logger'
 
-const connection = { host: config.REDIS_HOST, port: config.REDIS_PORT, password: config.REDIS_PASSWORD }
+const connection = { url: process.env.REDIS_URL }
 
 export const agentQueue = new Queue<AgentJob>('agent-jobs', {
   connection,

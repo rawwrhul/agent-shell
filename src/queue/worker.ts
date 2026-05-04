@@ -9,7 +9,7 @@ import { postToSlack }      from '../tenants/slackManager'
 import { getTokenSpend }    from '../memory/postgres'
 import { logger }           from '../logger'
 
-const connection = { host: config.REDIS_HOST, port: config.REDIS_PORT, password: config.REDIS_PASSWORD }
+const connection = { url: process.env.REDIS_URL }
 
 const worker = new Worker<AgentJob>(
   'agent-jobs',
