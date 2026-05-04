@@ -26,4 +26,5 @@ images:
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:latest
 options:
-  logging: LEGACY
+  logging: CLOUD_LOGGING_ONLY
+  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET
