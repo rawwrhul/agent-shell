@@ -15,14 +15,10 @@ steps:
       - --all-tags
       - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - run
-      - deploy
-      - cgs-agent-shell
-      - --image=us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
-      - --region=us-central1
-      - --platform=managed
+      - -c
+      - sed -i "s|:latest|:$COMMIT_SHA|g" deploy/cloudrun.yaml && gcloud run services replace deploy/cloudrun.yaml --region=us-central1
 images:
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:$COMMIT_SHA
   - us-central1-docker.pkg.dev/$PROJECT_ID/cgs-agent-shell/shell:latest
