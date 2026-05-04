@@ -18,4 +18,4 @@ RUN groupadd -r agent && useradd -r -g agent agent
 RUN mkdir -p /app/agent-progress && chown -R agent:agent /app
 USER agent
 EXPOSE 3000
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/src/index.js"]
