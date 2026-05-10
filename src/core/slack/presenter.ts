@@ -17,6 +17,10 @@
 // Every method here is best-effort with respect to Slack — the DB is the
 // source of truth. If chat.update or chat.postMessage fails (rate limit, bot
 // kicked from channel, etc) we log and move on. State stays consistent.
+//
+// As of Rollout 2: messages are sent with both `text` (mobile push fallback)
+// and `blocks` (rich Block Kit layout). render.ts produces the {text, blocks}
+// pair; this file just transports it.
 
 import type { App } from '@slack/bolt'
 import type { Pool } from 'pg'
@@ -33,6 +37,7 @@ import {
 import {
   createRun, getRun, mutateRunState, RunRow,
 } from './state-store'
+import type { RenderedMessage } from './blocks'
 
 export class SlackPresenter {
   constructor(
@@ -42,20 +47,9 @@ export class SlackPresenter {
   ) {}
 
   // ──────────────────────────────────────────────────────────────────────
-  // Run lifecycle — every method here corresponds to a real-world event the
-  // caller needs to surface to the client's Slack channel. Methods are
-  // idempotent where it makes sense (e.g. recordSpecialistStart on an
-  // already-running specialist is a no-op).
+  // Run lifecycle
   // ──────────────────────────────────────────────────────────────────────
 
-  /**
-   * Post the anchor message and create the slack_runs row. Called by the
-   * worker when an `orchestrate` job is about to start.
-   *
-   * If a run already exists for this taskId (retry after crash), we re-use
-   * the existing anchor instead of creating a new one. This keeps the
-   * channel clean across retries.
-   */
   async startRun(input: StartRunInput): Promise<void> {
     const existing = await getRun(this.pool, input.taskId)
     if (existing) {
@@ -76,8 +70,8 @@ export class SlackPresenter {
       specialists: {},
     }
 
-    const text = renderAnchor(initialState)
-    const ts = await this.postAnchor(input.tenantId, input.channelId, text)
+    const message = renderAnchor(initialState)
+    const ts = await this.postAnchor(input.tenantId, input.channelId, message)
     if (!ts) {
       this.logger.error('slack_anchor_post_failed', { taskId: input.taskId })
       return
@@ -94,7 +88,6 @@ export class SlackPresenter {
     this.logger.info('slack_run_started', { taskId: input.taskId, anchorTs: ts })
   }
 
-  /** Orchestrator finished planning — note the plan summary, transition phase. */
   async recordPlanComplete(taskId: string, planSummary: string): Promise<void> {
     await this.mutate(taskId, state => ({
       ...state,
@@ -103,14 +96,11 @@ export class SlackPresenter {
     }))
   }
 
-  /** Orchestrator just spawned a specialist. Add to the list as `queued`. */
   async recordSpecialistQueued(
     taskId: string, type: string, name: string, scopedTask: string,
   ): Promise<void> {
     await this.mutate(taskId, state => ({
       ...state,
-      // Once any specialist is queued we're past 'starting'. Don't overwrite
-      // 'failed' though — failures are sticky.
       phase: state.phase === 'failed' ? state.phase : 'planning',
       specialists: {
         ...state.specialists,
@@ -122,13 +112,10 @@ export class SlackPresenter {
     }))
   }
 
-  /** Subagent worker just picked up a specialist job. queued → running. */
   async recordSpecialistStart(taskId: string, type: string): Promise<void> {
     await this.mutate(taskId, state => {
       const entry = state.specialists[type]
       if (!entry) {
-        // Defensive: a specialist starting that we never queued. Add it
-        // anyway in `running` state so we still surface progress.
         return {
           ...state,
           phase: state.phase === 'failed' ? state.phase : 'running',
@@ -141,7 +128,6 @@ export class SlackPresenter {
           },
         }
       }
-      // Idempotent: if we're already running, do nothing.
       if (entry.state.status === 'running') return state
       return {
         ...state,
@@ -154,7 +140,6 @@ export class SlackPresenter {
     })
   }
 
-  /** Soft-progress note. Optional — not every specialist will emit these. */
   async recordSpecialistProgress(taskId: string, type: string, note: string): Promise<void> {
     await this.mutate(taskId, state => {
       const entry = state.specialists[type]
@@ -169,7 +154,6 @@ export class SlackPresenter {
     })
   }
 
-  /** Subagent finished successfully. Updates anchor + posts thread reply. */
   async recordSpecialistComplete(
     taskId: string, type: string, summary: string, tokenCount: number,
   ): Promise<void> {
@@ -179,7 +163,6 @@ export class SlackPresenter {
         this.logger.warn('slack_specialist_complete_unknown', { taskId, type })
         return state
       }
-      // Compute startedAt — fall back to spawnedAt or now if state was odd.
       const startedAt =
         entry.state.status === 'running'  ? entry.state.startedAt :
         entry.state.status === 'queued'   ? entry.state.spawnedAt :
@@ -207,7 +190,6 @@ export class SlackPresenter {
     }
   }
 
-  /** Subagent failed. Updates anchor + posts thread reply. */
   async recordSpecialistFailure(
     taskId: string, type: string, error: string,
   ): Promise<void> {
@@ -241,19 +223,13 @@ export class SlackPresenter {
     }
   }
 
-  /** Aggregator transitioned phase (e.g. to 'synthesising'). */
   async setPhase(taskId: string, phase: RunPhase): Promise<void> {
     await this.mutate(taskId, state => {
-      // Don't move backwards out of failed or complete.
       if (state.phase === 'failed' || state.phase === 'complete') return state
       return { ...state, phase }
     })
   }
 
-  /**
-   * Aggregator finished — post the final report in the thread, edit anchor
-   * to 'complete'. We pass the FULL report; render handles truncation.
-   */
   async completeRun(taskId: string, fullReport: string): Promise<void> {
     const row = await this.mutate(taskId, state => ({
       ...state,
@@ -265,21 +241,19 @@ export class SlackPresenter {
     }))
     if (!row) return
 
-    const text = renderFinalReport(fullReport, row.state.clientName)
-    await this.postThread(row.tenantId, row.channelId, row.anchorTs, text)
+    const message = renderFinalReport(fullReport, row.state.clientName)
+    await this.postThread(row.tenantId, row.channelId, row.anchorTs, message)
   }
 
-  /** Terminal failure (orchestrator or aggregator threw). */
   async failRun(taskId: string, error: string): Promise<void> {
     await this.mutate(taskId, state => {
-      if (state.phase === 'complete') return state  // don't undo a success
+      if (state.phase === 'complete') return state
       return { ...state, phase: 'failed', errorSummary: error }
     })
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Approval messages — independent of slack_runs. Posted directly to the
-  // channel so the client team sees them without expanding a thread.
+  // Approval messages — non-threaded
   // ──────────────────────────────────────────────────────────────────────
 
   async requestApproval(input: ApprovalRequestInput): Promise<void> {
@@ -299,7 +273,7 @@ export class SlackPresenter {
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Budget warning — independent of slack_runs.
+  // Budget warning — non-threaded
   // ──────────────────────────────────────────────────────────────────────
 
   async postBudgetWarning(input: BudgetWarningInput): Promise<void> {
@@ -310,11 +284,6 @@ export class SlackPresenter {
   // Internals
   // ──────────────────────────────────────────────────────────────────────
 
-  /**
-   * Mutate state, then re-render and edit the anchor. Returns the new row
-   * or null if the run wasn't found (logged + swallowed — the caller can't
-   * usefully recover from a missing slack_runs row mid-flight).
-   */
   private async mutate(
     taskId: string,
     fn: (s: RunState) => RunState,
@@ -331,13 +300,13 @@ export class SlackPresenter {
       return null
     }
 
-    const text = renderAnchor(row.state)
-    await this.editAnchor(row.tenantId, row.channelId, row.anchorTs, text)
+    const message = renderAnchor(row.state)
+    await this.editAnchor(row.tenantId, row.channelId, row.anchorTs, message)
     return row
   }
 
   private async postAnchor(
-    tenantId: string, channelId: string, text: string,
+    tenantId: string, channelId: string, message: RenderedMessage,
   ): Promise<string | null> {
     const app = this.apps.get(tenantId)
     if (!app) {
@@ -346,7 +315,10 @@ export class SlackPresenter {
     }
     try {
       const res = await app.client.chat.postMessage({
-        channel: channelId, text, unfurl_links: false,
+        channel: channelId,
+        text: message.text,
+        blocks: message.blocks,
+        unfurl_links: false,
       })
       return res.ts ?? null
     } catch (err) {
@@ -356,7 +328,7 @@ export class SlackPresenter {
   }
 
   private async editAnchor(
-    tenantId: string, channelId: string, anchorTs: string, text: string,
+    tenantId: string, channelId: string, anchorTs: string, message: RenderedMessage,
   ): Promise<void> {
     const app = this.apps.get(tenantId)
     if (!app) {
@@ -365,28 +337,35 @@ export class SlackPresenter {
     }
     try {
       await app.client.chat.update({
-        channel: channelId, ts: anchorTs, text,
+        channel: channelId,
+        ts: anchorTs,
+        text: message.text,
+        blocks: message.blocks,
       })
     } catch (err) {
       // Common cases: rate limit (429), message too old to edit, channel changed.
-      // None of these are fatal — state is consistent in DB; we'll re-render on
-      // the next mutation and might land that one.
+      // None are fatal — state is consistent in DB; the next mutation re-renders.
       this.logger.warn('slack_edit_anchor_failed', { tenantId, channelId, anchorTs, err: String(err) })
     }
   }
 
   private async postThread(
-    tenantId: string, channelId: string, anchorTs: string, text: string,
+    tenantId: string, channelId: string, anchorTs: string, message: RenderedMessage,
   ): Promise<void> {
     const app = this.apps.get(tenantId)
     if (!app) {
       this.logger.warn('slack_no_bot_for_tenant', { tenantId })
       return
     }
-    if (!text) return  // render returned empty (e.g. status not in expected variant)
+    // Render returned an empty message (e.g. specialist not in expected status) — skip.
+    if (!message.blocks.length) return
     try {
       await app.client.chat.postMessage({
-        channel: channelId, thread_ts: anchorTs, text, unfurl_links: false,
+        channel: channelId,
+        thread_ts: anchorTs,
+        text: message.text,
+        blocks: message.blocks,
+        unfurl_links: false,
       })
     } catch (err) {
       this.logger.warn('slack_thread_post_failed', { tenantId, channelId, anchorTs, err: String(err) })
@@ -394,7 +373,7 @@ export class SlackPresenter {
   }
 
   private async postChannel(
-    tenantId: string, channelId: string, text: string,
+    tenantId: string, channelId: string, message: RenderedMessage,
   ): Promise<void> {
     const app = this.apps.get(tenantId)
     if (!app) {
@@ -403,7 +382,10 @@ export class SlackPresenter {
     }
     try {
       await app.client.chat.postMessage({
-        channel: channelId, text, unfurl_links: false,
+        channel: channelId,
+        text: message.text,
+        blocks: message.blocks,
+        unfurl_links: false,
       })
     } catch (err) {
       this.logger.error('slack_channel_post_failed', { tenantId, channelId, err: String(err) })

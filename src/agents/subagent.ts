@@ -5,6 +5,11 @@
 //   - Has its own work subdirectory
 //   - Saves output to a shared location for the aggregator
 //   - Checks if it was the last sibling to complete → triggers aggregation
+//
+// As of Rollout 2, subagents:
+//   - Get the tenant's memory context prepended to their system prompt
+//   - Have four memory tools (record_memory, query_memory, scratchpad_write,
+//     scratchpad_read) so they can compound across runs.
 
 import path from 'path'
 import fs   from 'fs'
@@ -27,6 +32,10 @@ import {
 import { enqueueAggregationJob } from '../queue/producer'
 import { presenter }   from '../core/slack'
 import { logger } from '../logger'
+import { getMemoryContext, toPromptString } from '../memory/runtime'
+import {
+  MEMORY_TOOLS, executeMemoryTool, isMemoryToolName,
+} from '../memory/tools'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -52,15 +61,33 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   await createRunRecord({ id: runId, tenantId: task.tenantId, taskId: `${task.id}:${subTask.specialist_type}`, agentType: subTask.specialist_type, sessionId })
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: subTask.specialist_type, billingTag: tenant.billingTag, userId: task.slackUserId })
 
-  // Surface the queued → running transition on the Slack anchor so the channel
-  // shows real-time progress instead of a long silence while the model works.
   await presenter.recordSpecialistStart(task.id, subTask.specialist_type)
 
   const hookCtx = { taskId: task.id, sessionId, agentType: subTask.specialist_type, tenant, channelId: task.slackChannelId }
   const learnings = await retrieveRelevant({ tenantId: task.tenantId, agentType: subTask.specialist_type, query: subTask.task, topK: 3 })
 
-  const system  = buildSubagentSystem(subTask, tenant, learnings)
-  const userMsg = buildSubagentPrompt(subTask, workDir)
+  // Pull tenant memory (L2). Best-effort — first runs and DB hiccups
+  // both yield an empty block.
+  let memoryPrompt = ''
+  try {
+    const ctx = await getMemoryContext({
+      tenantId: task.tenantId,
+      taskType: subTask.specialist_type,
+      tokenBudget: 1500,
+    })
+    memoryPrompt = toPromptString(ctx)
+  } catch (err) {
+    logger.warn('subagent_memory_load_failed', { subTaskId, err: String(err) })
+  }
+
+  const baseSystem = buildSubagentSystem(subTask, tenant, learnings)
+  const system     = memoryPrompt ? `${memoryPrompt}\n\n${baseSystem}` : baseSystem
+  const userMsg    = buildSubagentPrompt(subTask, workDir)
+
+  // Specialists get the full agent toolset PLUS the four memory tools
+  // (record_memory, query_memory, scratchpad_write, scratchpad_read).
+  const tools = [...AGENT_TOOLS, ...MEMORY_TOOLS]
+  const memoryToolCtx = { tenantId: task.tenantId, runId: task.id }
 
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMsg }]
   let tokenCount = 0, toolCount = 0, finalOutput = ''
@@ -74,7 +101,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         model:      tenant.agentModel,
         max_tokens: 8096,
         system,
-        tools:      AGENT_TOOLS,
+        tools,
         messages,
       })
 
@@ -94,6 +121,20 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
         for (const tb of toolBlocks) {
           toolCount++
+
+          // Memory tools are tenant-scoped via the closure-captured ctx
+          // and bypass the hook system since they don't touch the
+          // outside world (no Slack, no CMS, no spend).
+          if (isMemoryToolName(tb.name)) {
+            const output = await executeMemoryTool(
+              tb.name,
+              tb.input as Record<string, unknown>,
+              memoryToolCtx,
+            )
+            results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
+            continue
+          }
+
           const event = { toolName: tb.name, toolInput: tb.input as Record<string,unknown>, toolUseId: tb.id, sessionId, taskId: task.id, tenantId: task.tenantId }
           const decision = await preToolUseHook(event, hookCtx)
 
@@ -134,14 +175,11 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
       tokenCount,
     })
 
-    // Check if all siblings are done — if so, trigger aggregation
     const allDone  = await allSubtasksComplete(task.id)
     const anyGood  = await anySubtaskSucceeded(task.id)
 
     if (allDone && anyGood) {
       logger.info('all_subagents_complete_triggering_aggregation', { taskId: task.id })
-      // BullMQ jobId deduplication ensures only one aggregation job runs
-      // even if two subagents complete at nearly the same time
       await enqueueAggregationJob(task)
     }
   } catch (err) {
@@ -170,6 +208,13 @@ function buildSubagentSystem(
 
 You are ONE specialist in a team of parallel agents. Each agent handles a specific area.
 Your job is to complete YOUR specific task thoroughly and write structured output to output.md.
+
+If a <tenant_memory> block was prepended above, read it first — it tells you what's been done before, what's in progress, what worked, what failed, what constraints apply. Build on prior wins; respect constraints; don't repeat work already in progress.
+
+You have memory tools available:
+- record_memory: persist a learning, win, loss, or fact worth remembering across runs. Use sparingly — only for things genuinely worth carrying forward.
+- query_memory: read prior memories for this tenant.
+- scratchpad_write / scratchpad_read: in-run notes (cleared after ~14 days; use freely).
 
 Rules:
 - Focus ONLY on your specific task. Do not attempt work outside your scope.

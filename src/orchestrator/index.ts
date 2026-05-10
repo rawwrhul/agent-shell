@@ -6,8 +6,10 @@
 //   4. Each spawn creates a SubTask record and enqueues a BullMQ job
 //   5. Exits cleanly — the parallel subagents do the actual work
 //
-// The orchestrator itself is fast (2-3 Claude turns). The heavy lifting
-// happens in the subagents running in parallel.
+// As of Rollout 2, the orchestrator's system prompt is prefixed with the
+// tenant's memory context (wins, losses, in-progress threads, learnings,
+// constraints, preferences, facts) so planning decisions compound across
+// runs instead of starting from zero each time.
 
 import Anthropic      from '@anthropic-ai/sdk'
 import { v4 as uuid } from 'uuid'
@@ -21,6 +23,7 @@ import { presenter }      from '../core/slack'
 import { buildTenantSkillsPrompt } from '../skills/loader'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
+import { getMemoryContext, toPromptString } from '../memory/runtime'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -32,6 +35,34 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
   const specialists = getSpecialists(tenant.agentType)
   const spawnedIds: string[] = []
+
+  // Pull the tenant's memory context. Best-effort — if it fails (DB hiccup,
+  // first run for a fresh tenant) we proceed with an empty memory block.
+  let memoryPrompt = ''
+  try {
+    const ctx = await getMemoryContext({
+      tenantId: task.tenantId,
+      taskType: 'orchestration',
+      tokenBudget: 1500,
+    })
+    memoryPrompt = toPromptString(ctx)
+    logger.info('orchestrator_memory_loaded', {
+      tenantId: task.tenantId,
+      taskId: task.id,
+      estimatedTokens: ctx.estimatedTokens,
+      slices: {
+        wins: ctx.recentWins.length,
+        losses: ctx.recentLosses.length,
+        inProgress: ctx.inProgress.length,
+        learnings: ctx.learnings.length,
+        constraints: ctx.constraints.length,
+        preferences: ctx.preferences.length,
+        facts: ctx.facts.length,
+      },
+    })
+  } catch (err) {
+    logger.warn('orchestrator_memory_load_failed', { taskId: task.id, err: String(err) })
+  }
 
   const orchestratorTools: Anthropic.Tool[] = [
     {
@@ -61,7 +92,8 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
     },
   ]
 
-  const system = buildOrchestratorSystem(task, tenant, specialists)
+  const baseSystem = buildOrchestratorSystem(task, tenant, specialists)
+  const system = memoryPrompt ? `${memoryPrompt}\n\n${baseSystem}` : baseSystem
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: buildOrchestratorPrompt(task) }]
 
   try {
@@ -90,7 +122,6 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
               continue
             }
 
-            // Create subtask record and enqueue the job
             const subTaskId = await createSubTask({
               parentTaskId:  task.id,
               tenantId:      task.tenantId,
@@ -157,6 +188,8 @@ function buildOrchestratorSystem(task: AgentTask, tenant: TenantConfig, speciali
   return `You are the orchestrator for ${tenant.clientName}'s ${tenant.agentType} agent, built by Causal Growth Science.
 
 Your ONLY job is to analyse the user's request and spawn the right specialist subagents to complete it.
+
+If a <tenant_memory> block was prepended above, read it first — it tells you what's been done before, what's in progress, what's been tried and worked or failed, and what constraints apply. Let that shape WHO you spawn and WHAT scoped task you give them. Don't spawn work that's already in progress; build on prior wins; respect constraints.
 
 ## Available specialists
 ${specList}
