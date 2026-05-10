@@ -17,7 +17,7 @@ import { TenantConfig } from '../tenants/types'
 import { getSpecialists } from './registry'
 import { createSubTask }  from '../memory/subtasks'
 import { enqueueSubagentJob } from '../queue/producer'
-import { postToSlack }    from '../tenants/slackManager'
+import { presenter }      from '../core/slack'
 import { buildTenantSkillsPrompt } from '../skills/loader'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
@@ -110,8 +110,11 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
             spawnedIds.push(subTaskId)
 
-            await postToSlack(task.tenantId, task.slackChannelId,
-              `🔍 *${spec.name}* starting on: _${input.specific_task.slice(0, 80)}${input.specific_task.length > 80 ? '…' : ''}_`
+            await presenter.recordSpecialistQueued(
+              task.id,
+              input.specialist_type,
+              spec.name,
+              input.specific_task,
             )
 
             logger.info('subagent_spawned', { tenantId: task.tenantId, taskId: task.id, specialistType: input.specialist_type, subTaskId })
@@ -121,6 +124,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
           if (tb.name === 'complete_planning') {
             const input = tb.input as { plan_summary: string }
             logger.info('orchestrator_planning_complete', { taskId: task.id, summary: input.plan_summary, subagents: spawnedIds.length })
+            await presenter.recordPlanComplete(task.id, input.plan_summary)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: 'Planning complete.' })
             await endTrace(sessionId, 'success', input.plan_summary)
             return

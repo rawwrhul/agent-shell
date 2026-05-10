@@ -1,6 +1,8 @@
 // src/orchestrator/aggregator.ts
 // Triggered automatically when all subagents for a task have completed.
-// Reads each subagent's output, synthesises it into a final report, posts to Slack.
+// Reads each subagent's output, synthesises it into a final report, posts to Slack
+// via the SlackPresenter (which edits the run's anchor in place and posts the
+// full report into its thread).
 
 import Anthropic      from '@anthropic-ai/sdk'
 import { v4 as uuid } from 'uuid'
@@ -10,7 +12,7 @@ import { config }     from '../config'
 import { AgentTask }  from '../types'
 import { TenantConfig } from '../tenants/types'
 import { getSubtasks } from '../memory/subtasks'
-import { postToSlack } from '../tenants/slackManager'
+import { presenter }   from '../core/slack'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
 
@@ -28,7 +30,12 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     const completed = subtasks.filter(s => s.status === 'completed' && s.output)
 
     if (!completed.length) {
-      await postToSlack(task.tenantId, task.slackChannelId, `⚠️ No subagent outputs found for task \`${task.id}\`. Nothing to aggregate.`)
+      // Degenerate case: every specialist failed. Surface this clearly via the
+      // presenter rather than a separate post — the worker's catch will then
+      // also see the throw and call failRun (idempotent, just sets the same
+      // state).
+      logger.error('aggregator_no_outputs', { taskId: task.id })
+      await presenter.failRun(task.id, 'No specialist outputs available — every specialist failed.')
       await endTrace(sessionId, 'error')
       return
     }
@@ -45,9 +52,9 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
 
     logger.info('aggregator_inputs_loaded', { taskId: task.id, specialists: outputs.map(o => o.specialistType) })
 
-    await postToSlack(task.tenantId, task.slackChannelId,
-      `🔄 All specialists complete. Synthesising final report…`
-    )
+    // Transition phase before the LLM call so the channel reflects
+    // "synthesising" while the model is working (10–30s typically).
+    await presenter.setPhase(task.id, 'synthesising')
 
     // Single Claude call to synthesise
     const response = await anthropic.messages.create({
@@ -67,17 +74,9 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     fs.mkdirSync(path.dirname(reportPath), { recursive: true })
     fs.writeFileSync(reportPath, report, 'utf-8')
 
-    // Post to Slack — split if longer than 3000 chars to avoid truncation
-    if (report.length <= 3000) {
-      await postToSlack(task.tenantId, task.slackChannelId,
-        `🎉 *${tenant.clientName} — Task complete*\n\n${report}`
-      )
-    } else {
-      // Post in chunks
-      await postToSlack(task.tenantId, task.slackChannelId,
-        `🎉 *${tenant.clientName} — Task complete*\n\n${report.slice(0, 2800)}\n\n_[Report continues — full version saved to server]_`
-      )
-    }
+    // Edit anchor → 'complete' and post the (possibly truncated) report into
+    // the anchor's thread. Truncation handling lives inside renderFinalReport.
+    await presenter.completeRun(task.id, report)
 
     const usage = response.usage
     const tokenCount = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
@@ -86,9 +85,10 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     await endTrace(sessionId, 'success', `Final report generated — ${report.length} chars`)
   } catch (err) {
     logger.error('aggregator_failed', { taskId: task.id, err: String(err) })
-    await postToSlack(task.tenantId, task.slackChannelId,
-      `❌ Aggregation failed for task \`${task.id}\`: ${String(err).slice(0, 300)}`
-    )
+    // The worker's catch will also call failRun, but doing it here too means
+    // the anchor flips to 'failed' even if the throw is swallowed somewhere
+    // upstream. failRun is idempotent.
+    await presenter.failRun(task.id, String(err).slice(0, 400))
     await endTrace(sessionId, 'error')
     throw err
   }

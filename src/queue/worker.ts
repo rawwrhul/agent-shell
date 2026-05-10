@@ -5,7 +5,7 @@ import { getTenant } from '../tenants/registry'
 import { runOrchestrator }  from '../orchestrator/index'
 import { runSubagent }      from '../agents/subagent'
 import { runAggregator }    from '../orchestrator/aggregator'
-import { postToSlack }      from '../tenants/slackManager'
+import { presenter }        from '../core/slack'
 import { getTokenSpend }    from '../memory/postgres'
 import { logger }           from '../logger'
 
@@ -16,7 +16,6 @@ const worker = new Worker<AgentJob>(
   async (job: Job<AgentJob>) => {
     const { jobType, task, subTaskId } = job.data
     const tenant = await getTenant(task.tenantId)
-    const post   = (text: string) => postToSlack(task.tenantId, task.slackChannelId, text)
 
     logger.info('job_processing', { jobType, tenantId: task.tenantId, taskId: task.id, subTaskId })
 
@@ -24,10 +23,28 @@ const worker = new Worker<AgentJob>(
     if (jobType === 'orchestrate') {
       const spent = await getTokenSpend(task.agentType, task.tenantId)
       if (spent > tenant.tokenBudgetPerRun) {
-        await post(`⚠️ Token budget reached for *${tenant.clientName}*. Task \`${task.id}\` paused.`)
+        await presenter.postBudgetWarning({
+          tenantId:   task.tenantId,
+          channelId:  task.slackChannelId,
+          taskId:     task.id,
+          clientName: tenant.clientName,
+          spent,
+          cap:        tenant.tokenBudgetPerRun,
+        })
         return
       }
-      await post(`🚀 *${tenant.clientName}* — starting *${tenant.agentType}* on:\n>${task.prompt}\n\nPlanning your specialist team…`)
+
+      // Anchor message + slack_runs row. Once this succeeds, every downstream
+      // call (orchestrator spawn announcements, subagent start/complete, the
+      // aggregator's final report) updates the same anchor in place.
+      await presenter.startRun({
+        taskId:     task.id,
+        tenantId:   task.tenantId,
+        agentType:  tenant.agentType,
+        clientName: tenant.clientName,
+        prompt:     task.prompt,
+        channelId:  task.slackChannelId,
+      })
     }
 
     try {
@@ -50,9 +67,14 @@ const worker = new Worker<AgentJob>(
       }
     } catch (err) {
       logger.error('job_failed', { jobType, taskId: task.id, subTaskId, err: String(err) })
-      if (jobType !== 'subagent') {
-        // Don't spam Slack on individual subagent failures — aggregator handles degraded results
-        await post(`❌ Task \`${task.id}\` (${jobType}) failed:\n\`\`\`${String(err).slice(0, 400)}\`\`\``)
+      // Run-level failures (orchestrator throws before completion, aggregator
+      // throws) flip the anchor to 'failed' with the error summary. Subagent
+      // failures are surfaced individually via recordSpecialistFailure inside
+      // runSubagent — we don't want one bad specialist to mark the whole run
+      // failed, since the aggregator can still produce a degraded report from
+      // the specialists that succeeded.
+      if (jobType === 'orchestrate' || jobType === 'aggregate') {
+        await presenter.failRun(task.id, String(err).slice(0, 400))
       }
       throw err
     }

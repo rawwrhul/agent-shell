@@ -25,6 +25,7 @@ import {
   allSubtasksComplete, anySubtaskSucceeded,
 } from '../memory/subtasks'
 import { enqueueAggregationJob } from '../queue/producer'
+import { presenter }   from '../core/slack'
 import { logger } from '../logger'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
@@ -51,7 +52,11 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   await createRunRecord({ id: runId, tenantId: task.tenantId, taskId: `${task.id}:${subTask.specialist_type}`, agentType: subTask.specialist_type, sessionId })
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: subTask.specialist_type, billingTag: tenant.billingTag, userId: task.slackUserId })
 
-  const hookCtx = { taskId: task.id, sessionId, agentType: subTask.specialist_type, tenant }
+  // Surface the queued → running transition on the Slack anchor so the channel
+  // shows real-time progress instead of a long silence while the model works.
+  await presenter.recordSpecialistStart(task.id, subTask.specialist_type)
+
+  const hookCtx = { taskId: task.id, sessionId, agentType: subTask.specialist_type, tenant, channelId: task.slackChannelId }
   const learnings = await retrieveRelevant({ tenantId: task.tenantId, agentType: subTask.specialist_type, query: subTask.task, topK: 3 })
 
   const system  = buildSubagentSystem(subTask, tenant, learnings)
@@ -118,6 +123,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
     await completeSubTask({ subTaskId, output: finalOutput, summary, tokenCount, toolCallCount: toolCount })
     await completeRunRecord({ id: runId, status: 'completed', tokenCount, toolCallCount: toolCount, summary })
+    await presenter.recordSpecialistComplete(task.id, subTask.specialist_type, summary, tokenCount)
     await endTrace(sessionId, 'success', summary)
 
     logger.info('subagent_complete', {
@@ -142,6 +148,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     logger.error('subagent_failed', { subTaskId, err: String(err) })
     await failSubTask(subTaskId, String(err))
     await completeRunRecord({ id: runId, status: 'failed', tokenCount, toolCallCount: toolCount, error: String(err) })
+    await presenter.recordSpecialistFailure(task.id, subTask.specialist_type, String(err).slice(0, 400))
     await endTrace(sessionId, 'error')
     throw err
   }

@@ -113,6 +113,24 @@ async function migrate() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_tenant ON approval_requests(tenant_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status)`)
 
+  // ── Slack run state (rollout 1: SlackPresenter) ───────────────────────────
+  // One row per agent task. Holds the anchor message timestamp and a structured
+  // RunState blob mutated under SELECT ... FOR UPDATE on every lifecycle event,
+  // so concurrent specialist completions can't trample each other.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS slack_runs (
+      task_id     TEXT        PRIMARY KEY,
+      tenant_id   TEXT        NOT NULL REFERENCES tenants(tenant_id),
+      channel_id  TEXT        NOT NULL,
+      anchor_ts   TEXT        NOT NULL,
+      state       JSONB       NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_slack_runs_tenant_updated
+    ON slack_runs (tenant_id, updated_at DESC)`)
+
   console.log('✅ All migrations complete')
   await pool.end()
 }

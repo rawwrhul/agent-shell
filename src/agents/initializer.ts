@@ -24,7 +24,7 @@ export async function runInitializerAgent(task: AgentTask, tenant: TenantConfig)
   await createRunRecord({ id: runId, tenantId: task.tenantId, taskId: task.id, agentType: task.agentType, sessionId })
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: task.agentType, billingTag: tenant.billingTag, userId: task.slackUserId })
 
-  const hookCtx = { taskId: task.id, sessionId, agentType: task.agentType, tenant }
+  const hookCtx = { taskId: task.id, sessionId, agentType: task.agentType, tenant, channelId: task.slackChannelId }
   const system  = buildInitializerSystem(task, tenant)
   const userMsg = buildInitializerPrompt(task, workDir)
 

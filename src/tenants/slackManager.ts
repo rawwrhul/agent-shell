@@ -6,7 +6,13 @@ import { getRunHistory } from '../memory/postgres'
 import { getQueueMetrics } from '../queue/producer'
 import { logger } from '../logger'
 
-const apps = new Map<string, App>()
+/**
+ * Map of tenantId → running Slack App instance. Exported so `core/slack`
+ * (the SlackPresenter) can post on behalf of each tenant's bot. The Map
+ * itself is mutated as bots boot/restart; consumers should look up at call
+ * time rather than caching values.
+ */
+export const apps = new Map<string, App>()
 
 export async function startAllTenantBots() {
   const rows = await listActiveTenants()
@@ -116,6 +122,12 @@ export async function startTenantBot(tenant: TenantConfig) {
   logger.info('tenant_bot_started', { tenantId: tenant.tenantId, client: tenant.clientName })
 }
 
+/**
+ * @deprecated Prefer `import { presenter } from '../core/slack'` and its
+ * lifecycle methods (startRun, recordSpecialistComplete, etc). This raw
+ * post is kept as an escape hatch for code paths that haven't migrated;
+ * new call sites should not use it.
+ */
 export async function postToSlack(tenantId: string, channelId: string, text: string) {
   const app = apps.get(tenantId)
   if (!app) { logger.warn('no_bot_for_tenant', { tenantId }); return }
