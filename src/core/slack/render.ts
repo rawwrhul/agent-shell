@@ -1,201 +1,213 @@
 // src/core/slack/render.ts
 //
-// Pure rendering: RunState → Slack mrkdwn strings. NO I/O of any kind in this
-// file — no DB, no Slack API, no logger. Safe to call inside a transaction.
+// As of Rollout 2: pure rendering of RunState → Block Kit RenderedMessage.
+// NO I/O of any kind in this file — no DB, no Slack API, no logger.
 //
-// Splitting render from state mutation lets us:
-//   1. Unit-test rendering with handcrafted RunState values.
-//   2. Reason about visual regressions independently of locking bugs.
-//   3. Re-render the same state cheaply (we do it on every Slack edit).
+// This module is the adapter between agent-shell's internal RunState shape
+// and the Block Kit builders in ./blocks/. Every named export preserves its
+// previous signature *from presenter.ts's perspective*; only the return type
+// changed (string → RenderedMessage). presenter.ts passes both `text`
+// (mobile push fallback) and `blocks` (rich layout) through to Slack's API.
 
 import type {
-  RunState, SpecialistEntry, RunPhase,
+  RunState, SpecialistEntry,
   ApprovalRequestInput, ApprovalResolvedInput, BudgetWarningInput,
 } from './types'
+import {
+  renderAnchor as renderAnchorBlocks,
+  renderSpecialistThread,
+  renderFinalReportThread,
+  renderApprovalRequest as renderApprovalRequestBlocks,
+  renderApprovalResolved as renderApprovalResolvedBlocks,
+  type AnchorState,
+  type SpecialistState,
+  type SpecialistThreadReply,
+  type FinalReportThreadReply,
+  type ApprovalRequest,
+  type ApprovalResolution,
+  type RenderedMessage,
+} from './blocks'
+import { header, section, context, fallbackText } from './blocks/shared'
 
 // ────────────────────────────────────────────────────────────────────────────
-// Anchor message — edited in place over the lifetime of the run.
+// Anchor — edited in place over the lifetime of the run
 // ────────────────────────────────────────────────────────────────────────────
 
-export function renderAnchor(state: RunState): string {
-  const lines: string[] = []
-  lines.push(`${phaseEmoji(state.phase)} *${escape(state.clientName)} — ${humaniseAgentType(state.agentType)}*`)
-  lines.push(`> ${truncateOneLine(state.prompt, 240)}`)
-  lines.push('')
-  lines.push(`*Status:* ${phaseLabel(state.phase)} ${elapsedSuffix(state)}`)
-
-  // Plan summary, if the orchestrator gave us one
-  if (state.planSummary && state.phase !== 'failed') {
-    lines.push(`*Plan:* ${truncateOneLine(state.planSummary, 200)}`)
-  }
-
-  // Specialists block (omitted when there are none yet)
-  const specialists = Object.values(state.specialists)
-  if (specialists.length) {
-    lines.push('')
-    lines.push('*Specialists:*')
-    for (const s of specialists) {
-      lines.push(`• ${renderSpecialistLine(s)}`)
-    }
-  }
-
-  // Footer / error
-  if (state.phase === 'failed' && state.errorSummary) {
-    lines.push('')
-    lines.push(`*Error:* ${truncateOneLine(state.errorSummary, 400)}`)
-  } else if (state.phase === 'complete') {
-    lines.push('')
-    lines.push('_Final report posted in thread ↓_')
-  } else if (specialists.length) {
-    lines.push('')
-    lines.push('_Specialist details posted in thread ↓_')
-  }
-
-  return lines.join('\n')
+export function renderAnchor(state: RunState): RenderedMessage {
+  return renderAnchorBlocks(adaptRunStateToAnchor(state))
 }
 
-function renderSpecialistLine(s: SpecialistEntry): string {
-  const name = `*${escape(s.name)}*`
+function adaptRunStateToAnchor(state: RunState): AnchorState {
+  const specialists = Object.values(state.specialists).map(adaptSpecialist)
+  return {
+    tenantName: state.clientName,
+    runId: state.taskId,
+    phase: state.phase,
+    startedAt: new Date(state.startedAt),
+    updatedAt: new Date(),
+    prompt: state.prompt,
+    planSummary: state.planSummary,
+    specialists,
+    finalSummary:
+      state.phase === 'complete' && state.finalReport
+        ? state.finalReport.summaryText
+        : undefined,
+    errorMessage: state.errorSummary,
+  }
+}
+
+function adaptSpecialist(s: SpecialistEntry): SpecialistState {
   switch (s.state.status) {
     case 'queued':
-      return `⏳ ${name} — queued`
+      return { id: s.type, name: s.name, status: 'pending' }
     case 'running':
-      return `🔄 ${name} — running (${formatDuration(Date.now() - s.state.startedAt)})${s.state.lastNote ? ` · _${truncateOneLine(s.state.lastNote, 100)}_` : ''}`
-    case 'complete': {
-      const dur = formatDuration(s.state.completedAt - s.state.startedAt)
-      return `✅ ${name} — ${truncateOneLine(s.state.summary, 200)} (${dur})`
-    }
-    case 'failed': {
-      const dur = formatDuration(s.state.failedAt - s.state.startedAt)
-      return `❌ ${name} — ${truncateOneLine(s.state.error, 200)} (${dur})`
-    }
+      return {
+        id: s.type,
+        name: s.name,
+        status: 'in_progress',
+        startedAt: new Date(s.state.startedAt),
+        summary: s.state.lastNote,
+      }
+    case 'complete':
+      return {
+        id: s.type,
+        name: s.name,
+        status: 'done',
+        startedAt: new Date(s.state.startedAt),
+        finishedAt: new Date(s.state.completedAt),
+        summary: s.state.summary,
+      }
+    case 'failed':
+      return {
+        id: s.type,
+        name: s.name,
+        status: 'failed',
+        startedAt: new Date(s.state.startedAt),
+        finishedAt: new Date(s.state.failedAt),
+        summary: s.state.error,
+      }
   }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Thread posts — replies under the anchor for per-specialist detail and the
-// final report.
+// Thread posts — per-specialist completion or failure
 // ────────────────────────────────────────────────────────────────────────────
 
-export function renderSpecialistComplete(s: SpecialistEntry): string {
-  if (s.state.status !== 'complete') return ''
-  return [
-    `✅ *${escape(s.name)}* finished`,
-    `_Tokens used: ${s.state.tokenCount.toLocaleString()}_`,
-    '',
-    truncate(s.state.summary, 2500),
-  ].join('\n')
-}
-
-export function renderSpecialistFailed(s: SpecialistEntry): string {
-  if (s.state.status !== 'failed') return ''
-  return [
-    `❌ *${escape(s.name)}* failed`,
-    '```',
-    truncate(s.state.error, 2000),
-    '```',
-  ].join('\n')
-}
-
-/**
- * The final report goes in the thread. If the report is over Slack's safe
- * single-message size we truncate the inline view and note the full length —
- * a future enhancement is to chunk into multiple thread posts or upload as a
- * snippet. For now, truncate-and-note keeps the channel readable.
- */
-export function renderFinalReport(report: string, clientName: string): string {
-  const safeLimit = 2800  // Slack hard limit is ~3000; leave headroom for header
-  const header = `🎉 *${escape(clientName)} — Final report*`
-  if (report.length <= safeLimit) {
-    return `${header}\n\n${report}`
+export function renderSpecialistComplete(s: SpecialistEntry): RenderedMessage {
+  if (s.state.status !== 'complete') {
+    return { text: '', blocks: [] }
   }
-  return [
-    header,
-    '',
-    report.slice(0, safeLimit),
-    '',
-    `_[Report truncated — full length ${report.length.toLocaleString()} chars; saved to server]_`,
-  ].join('\n')
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Approval messages — independent of slack_runs. Posted directly to the
-// channel (NOT threaded) so the client team sees them without scrolling.
-// ────────────────────────────────────────────────────────────────────────────
-
-export function renderApprovalRequest(input: ApprovalRequestInput): string {
-  return [
-    `⚠️ *Approval needed* — \`${escape(input.toolName)}\``,
-    `*Risk:* ${input.riskLevel.toUpperCase()} — ${escape(input.riskReason)}`,
-    `*Task:* \`${input.taskId}\``,
-    '',
-    'Please review the proposed action in your Approvals sheet and set Status to `approved` or `rejected`.',
-  ].join('\n')
-}
-
-export function renderApprovalResolved(input: ApprovalResolvedInput): string {
-  if (input.decision === 'timeout') {
-    return `⏱️ Approval for \`${escape(input.toolName)}\` (task \`${input.taskId}\`) timed out and was treated as rejected.`
+  const reply: SpecialistThreadReply = {
+    specialistName: s.name,
+    status: 'done',
+    summary: s.state.summary,
+    startedAt: new Date(s.state.startedAt),
+    finishedAt: new Date(s.state.completedAt),
   }
-  if (input.decision === 'approved') {
-    return `✅ \`${escape(input.toolName)}\` approved${input.resolvedBy ? ` by ${escape(input.resolvedBy)}` : ''} (task \`${input.taskId}\`).`
+  return renderSpecialistThread(reply)
+}
+
+export function renderSpecialistFailed(s: SpecialistEntry): RenderedMessage {
+  if (s.state.status !== 'failed') {
+    return { text: '', blocks: [] }
   }
-  // rejected
-  return [
-    `🚫 \`${escape(input.toolName)}\` rejected${input.resolvedBy ? ` by ${escape(input.resolvedBy)}` : ''} (task \`${input.taskId}\`).`,
-    input.rejectionReason ? `_Reason:_ ${truncateOneLine(input.rejectionReason, 240)}` : '',
-  ].filter(Boolean).join('\n')
+  const reply: SpecialistThreadReply = {
+    specialistName: s.name,
+    status: 'failed',
+    summary: s.state.error,
+    errorMessage: s.state.error,
+    startedAt: new Date(s.state.startedAt),
+    finishedAt: new Date(s.state.failedAt),
+  }
+  return renderSpecialistThread(reply)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Budget warning — independent of slack_runs.
+// Final report — posted in the anchor thread when the aggregator finishes
 // ────────────────────────────────────────────────────────────────────────────
 
-export function renderBudgetWarning(input: BudgetWarningInput): string {
-  return [
-    `⚠️ *Token budget reached for ${escape(input.clientName)}*`,
-    `Spent: ${input.spent.toLocaleString()} / Cap: ${input.cap.toLocaleString()}`,
-    `Task \`${input.taskId}\` paused. Increase the per-run cap on the tenant or wait until next reset.`,
-  ].join('\n')
+export function renderFinalReport(report: string, clientName: string): RenderedMessage {
+  const reply: FinalReportThreadReply = {
+    headline: `${clientName} — Final report`,
+    sections: [{ body: report }],
+  }
+  return renderFinalReportThread(reply)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Approval messages — non-threaded, posted directly to the channel.
+//
+// The agent-shell's internal ApprovalRequestInput / ApprovalResolvedInput
+// shapes don't match the block builders' shapes 1:1, so we adapt here.
+// `tenantId` is used as the display name fallback — fine for tarino-style
+// slugs, but can be replaced with a tenant-name lookup later if richer
+// display is needed.
 // ────────────────────────────────────────────────────────────────────────────
 
-function phaseEmoji(phase: RunPhase): string {
-  switch (phase) {
-    case 'starting':     return '🚀'
-    case 'planning':     return '🧠'
-    case 'running':      return '🔄'
-    case 'synthesising': return '🧵'
-    case 'complete':     return '🎉'
-    case 'failed':       return '❌'
+export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMessage {
+  const req: ApprovalRequest = {
+    tenantName: input.tenantId,
+    runId: input.taskId,
+    summary: `${input.toolName} requested (${input.riskLevel} risk)`,
+    detail: input.riskReason,
+    actionKind: 'other',
+    requestedAt: new Date(),
+    approvalId: input.approvalId,
+  }
+  return renderApprovalRequestBlocks(req)
+}
+
+export function renderApprovalResolved(input: ApprovalResolvedInput): RenderedMessage {
+  // The block builder's resolution doesn't have a 'timeout' variant —
+  // map it to 'deferred' since that's what timeouts effectively are
+  // from a decision-tracking perspective.
+  const resolution: 'approved' | 'rejected' | 'deferred' =
+    input.decision === 'approved' ? 'approved' :
+    input.decision === 'rejected' ? 'rejected' :
+    'deferred'
+
+  const res: ApprovalResolution = {
+    tenantName: input.tenantId,
+    summary: input.toolName,
+    resolution,
+    // resolvedBy is required on the block builder; auto-resolved
+    // (timeout) and missing-resolver cases get a placeholder.
+    resolvedBy: input.resolvedBy ?? '_system_',
+    resolvedAt: new Date(),
+    comment: input.rejectionReason,
+  }
+  return renderApprovalResolvedBlocks(res)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Budget warning — non-threaded. Inline blocks; small message, rare event.
+// ────────────────────────────────────────────────────────────────────────────
+
+export function renderBudgetWarning(input: BudgetWarningInput): RenderedMessage {
+  const title = `Token budget reached for ${input.clientName}`
+  const blocks = [
+    header(`⚠️ ${title}`),
+    section(
+      `*Spent:* ${input.spent.toLocaleString()}\n*Cap:* ${input.cap.toLocaleString()}`
+    ),
+    section(
+      `Task \`${input.taskId}\` paused. Increase the per-run cap on the tenant or wait until next reset.`
+    ),
+    context([`Task \`${input.taskId}\``]),
+  ]
+  return {
+    text: fallbackText({
+      title,
+      summary: `task ${input.taskId} paused`,
+    }),
+    blocks,
   }
 }
 
-function phaseLabel(phase: RunPhase): string {
-  switch (phase) {
-    case 'starting':     return 'Starting up'
-    case 'planning':     return 'Planning'
-    case 'running':      return 'Running specialists'
-    case 'synthesising': return 'Synthesising final report'
-    case 'complete':     return 'Complete'
-    case 'failed':       return 'Failed'
-  }
-}
+// ────────────────────────────────────────────────────────────────────────────
+// Helpers preserved for any downstream callers / tests
+// ────────────────────────────────────────────────────────────────────────────
 
-function elapsedSuffix(state: RunState): string {
-  const elapsed = Date.now() - state.startedAt
-  const tag = state.phase === 'complete' || state.phase === 'failed' ? 'total' : 'elapsed'
-  return `(${formatDuration(elapsed)} ${tag})`
-}
-
-function humaniseAgentType(t: string): string {
-  return t.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-}
-
-/** Format a millisecond duration as `2m 15s`, `45s`, `1h 5m`. */
 export function formatDuration(ms: number): string {
   if (ms < 0) ms = 0
   const totalSec = Math.floor(ms / 1000)
@@ -205,24 +217,4 @@ export function formatDuration(ms: number): string {
   if (h > 0) return `${h}h ${m}m`
   if (m > 0) return `${m}m ${s}s`
   return `${s}s`
-}
-
-/** Cap to one line and a max length, with ellipsis if truncated. */
-function truncateOneLine(s: string, max: number): string {
-  const oneLine = s.replace(/\s+/g, ' ').trim()
-  return oneLine.length > max ? oneLine.slice(0, max - 1) + '…' : oneLine
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '…' : s
-}
-
-/**
- * Escape Slack mrkdwn special characters that could break formatting if they
- * appear inside user-supplied text (client names, prompts, etc). Slack doesn't
- * support classic backslash-escaping — instead we use HTML entities for the
- * three characters that can be misinterpreted in mrkdwn.
- */
-function escape(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
