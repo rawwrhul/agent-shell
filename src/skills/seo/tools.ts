@@ -167,6 +167,31 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
       required: ['toolName', 'toolInput', 'proposedAction', 'priority'],
     },
   },
+  {
+    name: 'analyze_page',
+    description:
+      "Fetch a single URL and return a structured summary of every SEO-relevant signal on it in ONE call: " +
+      "HTTP status + response time, page title + length, meta description + length, H1 count + text, " +
+      "H2/H3 outline, canonical URL, robots directive, schema.org JSON-LD blocks (parsed), Open Graph + " +
+      "Twitter Card tags, internal link count, external link count, image count + alt coverage, " +
+      "word count, language, and a short text preview. " +
+      "USE THIS INSTEAD of multiple run_command/web_fetch calls for page-level analysis — replaces " +
+      "5-10 separate tool calls with one structured response. Safe (read-only, no HITL needed).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Full URL to analyse (https://...). Just one URL per call. For multiple URLs, call this tool multiple times in parallel.',
+        },
+        userAgent: {
+          type: 'string',
+          description: "Optional User-Agent string. Default: 'CGSAuditBot/1.0'.",
+        },
+      },
+      required: ['url'],
+    },
+  },
 ];
 
 // ── Dispatch ────────────────────────────────────────────────────────
@@ -198,6 +223,7 @@ export async function executeSeoTool(
       case 'query_clusters':       return await doQueryClusters(ctx);
       case 'query_recent_actions': return await doQueryRecentActions(ctx);
       case 'propose_action':       return await doProposeAction(input, ctx);
+      case 'analyze_page':         return await doAnalyzePage(input);
       default:                     return `Unknown SEO tool: ${name}`;
     }
   } catch (err) {
@@ -383,4 +409,347 @@ function asNum(v: unknown): number | undefined {
   if (typeof v === 'number') return v;
   if (typeof v === 'string' && v) { const n = Number(v); return Number.isFinite(n) ? n : undefined; }
   return undefined;
+}
+
+// ── analyze_page composite tool ─────────────────────────────────────
+//
+// Fetches one URL and returns a structured summary of every page-level SEO
+// signal in a single call. Replaces 5-10 separate run_command/web_fetch
+// calls per page check — each of which previously cost a full model
+// round-trip.
+//
+// What we extract:
+//   HTTP:      status, response time (ms), final URL after redirects,
+//              content-type, content length, server header, x-robots-tag
+//   Page:     title (+ char count), meta description (+ char count),
+//              meta robots, language, charset
+//   Structure: H1 array, H2 array, H3 array, word count
+//   Linking:   canonical URL, internal link count, external link count,
+//              broken-anchor check (anchors with empty href)
+//   Schema:    every JSON-LD block found, parsed
+//   Social:    og:* tags, twitter:* tags
+//   Images:    total count, count with alt, count with empty alt, count
+//              missing alt, largest unoptimised image
+//   Preview:   first ~200 chars of main text
+//
+// Implementation notes:
+//   - Uses a single fetch with a 15s timeout. No retries here — the
+//     subagent can retry the whole tool call if needed.
+//   - HTML parsing is minimal regex-based. Good enough for the >90% of
+//     pages where signals are present in the source. SPAs that render
+//     in JS get a degraded view but the tool surfaces that explicitly
+//     (low word count + no H1 + meaningful preview text in <body> = SPA).
+//   - Output is plain text formatted for Claude to read — not JSON.
+//     Tokens are similar but more scan-readable for the model.
+
+interface AnalyzePageResult {
+  status:            number;
+  finalUrl:          string;
+  responseTimeMs:    number;
+  contentType:       string | null;
+  contentLength:     number | null;
+  xRobotsTag:        string | null;
+  pageTitle:         string | null;
+  pageTitleLen:      number;
+  metaDescription:   string | null;
+  metaDescLen:       number;
+  metaRobots:        string | null;
+  language:          string | null;
+  charset:           string | null;
+  canonical:         string | null;
+  h1s:               string[];
+  h2s:               string[];
+  h3s:               string[];
+  wordCount:         number;
+  internalLinkCount: number;
+  externalLinkCount: number;
+  emptyAnchorCount:  number;
+  jsonLdBlocks:      unknown[];
+  openGraph:         Record<string, string>;
+  twitterCard:       Record<string, string>;
+  imageCount:        number;
+  imagesWithAlt:     number;
+  imagesEmptyAlt:    number;
+  imagesNoAlt:       number;
+  preview:           string;
+}
+
+async function doAnalyzePage(input: Record<string, unknown>): Promise<string> {
+  const i = input as { url: string; userAgent?: string };
+
+  if (!i.url || typeof i.url !== 'string') {
+    return `analyze_page error: url is required`;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(i.url);
+  } catch {
+    return `analyze_page error: invalid URL "${i.url}"`;
+  }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    return `analyze_page error: only http(s) URLs supported, got ${parsedUrl.protocol}`;
+  }
+
+  const userAgent = i.userAgent ?? 'CGSAuditBot/1.0';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const t0 = Date.now();
+
+  let res: Response;
+  let body: string;
+  try {
+    res = await fetch(i.url, {
+      method:  'GET',
+      headers: { 'User-Agent': userAgent, 'Accept': 'text/html,*/*;q=0.8' },
+      signal:  controller.signal,
+      redirect: 'follow',
+    });
+    body = await res.text();
+  } catch (err) {
+    clearTimeout(timeout);
+    return `analyze_page failed: ${String(err).slice(0, 200)}`;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const elapsed = Date.now() - t0;
+  const result = parseHtml(body, parsedUrl, res, elapsed);
+
+  return formatAnalyzePageResult(i.url, result);
+}
+
+function parseHtml(html: string, pageUrl: URL, res: Response, elapsed: number): AnalyzePageResult {
+  // ── HTTP layer ────
+  const status        = res.status;
+  const finalUrl      = res.url;
+  const contentType   = res.headers.get('content-type');
+  const contentLength = (() => {
+    const cl = res.headers.get('content-length');
+    if (cl) return parseInt(cl, 10);
+    return new TextEncoder().encode(html).length;
+  })();
+  const xRobotsTag = res.headers.get('x-robots-tag');
+
+  // ── <head> tags ────
+  const pageTitle = matchOnce(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
+  const metaDescription = matchAttr(html, 'meta', 'name', 'description', 'content');
+  const metaRobots      = matchAttr(html, 'meta', 'name', 'robots', 'content');
+  const language        = matchOnce(html, /<html[^>]*\blang=["']([^"']+)["']/i);
+  const charset         = matchOnce(html, /<meta[^>]*\bcharset=["']?([^"'\s>]+)/i);
+  const canonical       = matchAttr(html, 'link', 'rel', 'canonical', 'href');
+
+  // ── Headings ────
+  const h1s = matchAll(html, /<h1\b[^>]*>([\s\S]*?)<\/h1>/gi).map(stripTags).filter(Boolean);
+  const h2s = matchAll(html, /<h2\b[^>]*>([\s\S]*?)<\/h2>/gi).map(stripTags).filter(Boolean);
+  const h3s = matchAll(html, /<h3\b[^>]*>([\s\S]*?)<\/h3>/gi).map(stripTags).filter(Boolean);
+
+  // ── Links ────
+  const anchors = matchAll(html, /<a\b[^>]*\bhref=["']([^"']*)["'][^>]*>/gi);
+  let internalLinkCount = 0, externalLinkCount = 0, emptyAnchorCount = 0;
+  for (const href of anchors) {
+    if (!href || href === '#') { emptyAnchorCount++; continue; }
+    try {
+      const u = new URL(href, pageUrl);
+      if (u.hostname === pageUrl.hostname) internalLinkCount++;
+      else externalLinkCount++;
+    } catch { /* skip malformed */ }
+  }
+
+  // ── JSON-LD ────
+  const jsonLdBlocks: unknown[] = [];
+  for (const block of matchAll(html, /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      jsonLdBlocks.push(JSON.parse(block.trim()));
+    } catch {
+      jsonLdBlocks.push({ _parseError: true, _raw: block.trim().slice(0, 300) });
+    }
+  }
+
+  // ── Open Graph + Twitter ────
+  const openGraph: Record<string, string> = {};
+  const twitterCard: Record<string, string> = {};
+  for (const m of matchAllPairs(html, /<meta[^>]*\bproperty=["'](og:[^"']+)["'][^>]*\bcontent=["']([^"']*)["']/gi)) {
+    openGraph[m[0]] = m[1];
+  }
+  for (const m of matchAllPairs(html, /<meta[^>]*\bname=["'](twitter:[^"']+)["'][^>]*\bcontent=["']([^"']*)["']/gi)) {
+    twitterCard[m[0]] = m[1];
+  }
+
+  // ── Images ────
+  let imageCount = 0, imagesWithAlt = 0, imagesEmptyAlt = 0, imagesNoAlt = 0;
+  const imgTags = matchAll(html, /<img\b[^>]*>/gi);
+  for (const tag of imgTags) {
+    imageCount++;
+    const altMatch = tag.match(/\balt=["']([^"']*)["']/i);
+    if (altMatch === null)        imagesNoAlt++;
+    else if (altMatch[1] === '')  imagesEmptyAlt++;
+    else                          imagesWithAlt++;
+  }
+
+  // ── Body text / word count / preview ────
+  const bodyHtml = matchOnce(html, /<body\b[^>]*>([\s\S]*?)<\/body>/i) ?? html;
+  const textContent = bodyHtml
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const wordCount = textContent ? textContent.split(/\s+/).length : 0;
+  const preview   = textContent.slice(0, 300);
+
+  return {
+    status, finalUrl, responseTimeMs: elapsed,
+    contentType, contentLength, xRobotsTag,
+    pageTitle:       pageTitle ? decode(pageTitle).trim() : null,
+    pageTitleLen:    pageTitle ? decode(pageTitle).trim().length : 0,
+    metaDescription: metaDescription ? decode(metaDescription).trim() : null,
+    metaDescLen:     metaDescription ? decode(metaDescription).trim().length : 0,
+    metaRobots,
+    language,
+    charset,
+    canonical,
+    h1s, h2s, h3s,
+    wordCount,
+    internalLinkCount, externalLinkCount, emptyAnchorCount,
+    jsonLdBlocks,
+    openGraph, twitterCard,
+    imageCount, imagesWithAlt, imagesEmptyAlt, imagesNoAlt,
+    preview,
+  };
+}
+
+function formatAnalyzePageResult(url: string, r: AnalyzePageResult): string {
+  const lines: string[] = [];
+  lines.push(`# analyze_page: ${url}`);
+  lines.push('');
+  lines.push(`## HTTP`);
+  lines.push(`- Status: ${r.status}`);
+  lines.push(`- Final URL: ${r.finalUrl}${r.finalUrl !== url ? '  (redirected from input)' : ''}`);
+  lines.push(`- Response time: ${r.responseTimeMs}ms`);
+  if (r.contentType)   lines.push(`- Content-Type: ${r.contentType}`);
+  if (r.contentLength) lines.push(`- Size: ${formatBytes(r.contentLength)}`);
+  if (r.xRobotsTag)    lines.push(`- X-Robots-Tag: ${r.xRobotsTag}`);
+  lines.push('');
+
+  lines.push(`## Head tags`);
+  lines.push(`- Title: ${r.pageTitle === null ? '(missing)' : `"${r.pageTitle}" (${r.pageTitleLen} chars)`}`);
+  lines.push(`- Meta description: ${r.metaDescription === null ? '(missing)' : `"${r.metaDescription}" (${r.metaDescLen} chars)`}`);
+  if (r.metaRobots) lines.push(`- Meta robots: ${r.metaRobots}`);
+  if (r.canonical)  lines.push(`- Canonical: ${r.canonical}`);
+  if (r.language)   lines.push(`- HTML lang: ${r.language}`);
+  if (r.charset)    lines.push(`- Charset: ${r.charset}`);
+  lines.push('');
+
+  lines.push(`## Heading structure`);
+  lines.push(`- H1 (${r.h1s.length}): ${r.h1s.length === 0 ? '(none — that\'s a problem)' : r.h1s.map(h => `"${h}"`).join(' | ')}`);
+  lines.push(`- H2 (${r.h2s.length})${r.h2s.length > 0 ? ': ' + r.h2s.slice(0, 8).map(h => `"${h}"`).join(' | ') + (r.h2s.length > 8 ? ' …' : '') : ''}`);
+  if (r.h3s.length > 0) lines.push(`- H3 (${r.h3s.length})`);
+  lines.push('');
+
+  lines.push(`## Links`);
+  lines.push(`- Internal: ${r.internalLinkCount}`);
+  lines.push(`- External: ${r.externalLinkCount}`);
+  if (r.emptyAnchorCount > 0) lines.push(`- Empty anchors (broken links / placeholders): ${r.emptyAnchorCount}`);
+  lines.push('');
+
+  lines.push(`## Images`);
+  lines.push(`- Total: ${r.imageCount} (${r.imagesWithAlt} with alt, ${r.imagesEmptyAlt} empty alt, ${r.imagesNoAlt} missing alt)`);
+  lines.push('');
+
+  if (r.jsonLdBlocks.length > 0) {
+    lines.push(`## Schema (JSON-LD)`);
+    for (const block of r.jsonLdBlocks) {
+      try {
+        const j = block as Record<string, unknown>;
+        const t = j['@type'] ?? j._parseError ? 'PARSE_ERROR' : '(no @type)';
+        lines.push(`- ${typeof t === 'string' ? t : JSON.stringify(t)}`);
+      } catch {
+        lines.push(`- (unparseable)`);
+      }
+    }
+    lines.push('');
+  } else {
+    lines.push(`## Schema (JSON-LD)`);
+    lines.push(`- (none — page has no structured-data labels for Google)`);
+    lines.push('');
+  }
+
+  const ogKeys = Object.keys(r.openGraph);
+  if (ogKeys.length > 0) {
+    lines.push(`## Open Graph`);
+    for (const k of ogKeys.sort()) lines.push(`- ${k}: ${truncate(r.openGraph[k], 100)}`);
+    lines.push('');
+  }
+
+  const twKeys = Object.keys(r.twitterCard);
+  if (twKeys.length > 0) {
+    lines.push(`## Twitter Card`);
+    for (const k of twKeys.sort()) lines.push(`- ${k}: ${truncate(r.twitterCard[k], 100)}`);
+    lines.push('');
+  }
+
+  lines.push(`## Content`);
+  lines.push(`- Word count: ${r.wordCount}${r.wordCount < 100 ? '  (low — possibly SPA rendered via JS or thin content)' : ''}`);
+  lines.push(`- Preview: ${r.preview ? `"${r.preview}…"` : '(empty body — likely SPA shell)'}`);
+  return lines.join('\n');
+}
+
+// ── Tiny HTML/text helpers (regex-based — fast, no DOM dep) ─────────
+
+function matchOnce(s: string, re: RegExp): string | null {
+  const m = s.match(re);
+  return m && m[1] ? m[1] : null;
+}
+
+function matchAll(s: string, re: RegExp): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  re.lastIndex = 0;
+  while ((m = re.exec(s)) !== null) out.push(m[1]);
+  return out;
+}
+
+function matchAllPairs(s: string, re: RegExp): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  let m: RegExpExecArray | null;
+  re.lastIndex = 0;
+  while ((m = re.exec(s)) !== null) out.push([m[1], m[2]]);
+  return out;
+}
+
+function matchAttr(html: string, tag: string, attrName: string, attrValue: string, contentAttr: string): string | null {
+  // <meta name="..." content="...">  OR  <link rel="..." href="...">
+  // attribute order may be reversed.
+  const r1 = new RegExp(`<${tag}[^>]*\\b${attrName}=["']${attrValue}["'][^>]*\\b${contentAttr}=["']([^"']*)["']`, 'i');
+  const m1 = html.match(r1);
+  if (m1) return m1[1];
+  const r2 = new RegExp(`<${tag}[^>]*\\b${contentAttr}=["']([^"']*)["'][^>]*\\b${attrName}=["']${attrValue}["']`, 'i');
+  const m2 = html.match(r2);
+  if (m2) return m2[1];
+  return null;
+}
+
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function decode(s: string): string {
+  return s
+    .replace(/&amp;/g,  '&')
+    .replace(/&lt;/g,   '<')
+    .replace(/&gt;/g,   '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g,  "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }

@@ -28,6 +28,7 @@ import { buildTenantSkillsPrompt } from '../skills/loader'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
 import { getMemoryContext, toPromptString } from '../memory/runtime'
+import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -110,8 +111,11 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
       const response = await anthropic.messages.create({
         model:      tenant.agentModel,
         max_tokens: 4096,
-        system,
-        tools:      orchestratorTools,
+        // Static parts cached. System changes only if tenant memory differs;
+        // tools are constant. ~5k prefix tokens get cached across the
+        // planning loop's iterations.
+        system:     cachedSystem(system),
+        tools:      cachedTools(orchestratorTools),
         messages,
       })
 
@@ -198,23 +202,42 @@ Your ONLY job is to analyse the user's request and spawn the right specialist su
 
 If a <tenant_memory> block was prepended above, read it first — it tells you what's been done before, what's in progress, what's been tried and worked or failed, and what constraints apply. Let that shape WHO you spawn and WHAT scoped task you give them. Don't spawn work that's already in progress; build on prior wins; respect constraints.
 
+## Audience reminder
+
+The person reading the final output is ${tenant.clientName}'s operator — they run the business, not an SEO agency. Every plan_summary, every specialist task description, every label needs to be readable by someone who doesn't know SEO terminology. Don't use "SERP", "CTR", "H1", "meta description", "canonical", "schema markup", "topical authority" etc. as standalone terms. Use plain language.
+
 ## Available specialists
 ${specList}
 
+## Inferring scope from the request
+
+Read the request and decide HOW MUCH work to commission. Stamp the scope explicitly in the task you give each specialist.
+
+- **Quick scope** — "quick check", "have a look", "is anything wrong", short questions, vague short prompts. Specialist should converge in 3-5 findings, 1-3 tool calls.
+- **Diagnostic scope** — "why isn't X happening", "help me with Y", "fix Z". Specialist should scope ONLY to that question.
+- **Audit scope** — "audit", "full review", "comprehensive check", "deep dive". Specialist should cover thoroughly, 5-10 tool calls.
+
+Default to QUICK if the request is short or vague. Operators usually want fast wins, not deep audits.
+
+When you spawn a specialist, include the inferred scope IN the task description. Example:
+  "Scope: quick check. Look at the homepage page title, summary, and main headline only. Stop after you've checked those three things and have findings to report."
+
 ## Rules
 - Spawn ONLY the specialists actually needed for the request. A targeted request may need just one. A full audit needs all.
-- Give each specialist a specific, scoped task — not a copy of the original prompt.
+- Give each specialist a specific, scoped task that includes the inferred scope — not a copy of the original prompt.
 - Include all context the specialist will need: target domain, competitor domains, specific pages, available credentials.
 - Call complete_planning when all spawns are done.
 - Do NOT attempt to do the work yourself. Your only tools are spawn_subagent and complete_planning.
 
 ## Voice for plan_summary
-The plan_summary you pass to complete_planning is shown to the user in Slack as your stated intent for this run. Write it in first person, lead with the action, scan-readable on mobile.
 
-YES: "Going to audit the homepage HTTP response and schema markup, plus pull the top 10 ranking keywords for context."
+The plan_summary you pass to complete_planning is shown to the operator in Slack as your stated intent for this run. Write it in first person, lead with the action, scan-readable on mobile. Use the operator's language, not SEO jargon.
+
+YES: "Going to check the homepage — search result title, summary, and headline only. Should take about a minute."
+YES: "Doing a full site audit — I'll cover page content, internal navigation, and what's showing in Google."
 NO:  "Spawned a single executor specialist to perform a comprehensive technical SEO check on the tarino.au homepage covering HTTP/redirect behaviour, response headers, DNS, SSL, and on-page SEO signals."
 
-The first version respects the reader's time and signals intent. The second buries the action in implementation detail.
+The first respects the operator's time and signals intent in their terms. The second drowns them in implementation detail.
 
 ${buildTenantSkillsPrompt(tenant.skills)}`
 }

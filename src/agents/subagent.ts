@@ -53,6 +53,7 @@ import {
 import {
   SEO_TOOLS, executeSeoTool, isSeoToolName,
 } from '../skills/seo'
+import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -219,8 +220,14 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
       const response = await callAnthropicWithRetry({
         model:      tenant.agentModel,
         max_tokens: 8096,
-        system,
-        tools,
+        // Prompt caching: cache the system prompt (static for the run) and
+        // all tool definitions (static for the run). Messages stay uncached
+        // since they grow each turn. After iteration 1, the ~10k tokens of
+        // system+tools cost ~10% of regular rate AND don't count against
+        // ITPM. On a 15-iteration run this is ~6x cost reduction on the
+        // prefix and substantially eases rate-limit pressure.
+        system:     cachedSystem(system),
+        tools:      cachedTools(tools),
         messages,
       })
 
@@ -286,21 +293,71 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     }
 
     if (turns >= iterationCap && !finalOutput) {
-      // Cap hit without natural completion. Take what we have.
+      // Cap hit without natural completion. Force a final summarisation call:
+      // no tools, ask the model to write 3-5 actionable findings based on
+      // what it's discovered so far. Better than dumping the last assistant
+      // message — that's usually full of tool_use blocks with little text.
       logger.warn('subagent_iteration_cap_hit', {
         taskId: task.id, subTaskId, specialistType: subTask.specialist_type,
         cap: iterationCap, toolCount, tokenCount,
       })
-      // Pull last assistant text if any
-      const lastAsst = [...messages].reverse().find(m => m.role === 'assistant')
-      if (lastAsst && Array.isArray(lastAsst.content)) {
-        finalOutput = lastAsst.content
-          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-          .map(b => b.text)
-          .join('') ||
-          `Subagent hit iteration cap (${iterationCap}) before reaching natural completion. Partial findings only.`
-      } else {
-        finalOutput = `Subagent hit iteration cap (${iterationCap}) before reaching natural completion.`
+
+      try {
+        const summaryMessages: Anthropic.MessageParam[] = [
+          ...messages,
+          {
+            role: 'user',
+            content:
+              'You have used your iteration budget. STOP making tool calls. ' +
+              "Based on what you've discovered so far, write 3-5 actionable findings " +
+              'for the operator. Plain language. Lead with the action. Tell them the ' +
+              "impact in their terms (don't use SEO jargon). If you don't have enough " +
+              "data to make a confident finding, mark it explicitly: 'Looks like X but " +
+              "I didn't have time to confirm.' " +
+              'End with: SPECIALIST_COMPLETE: <one-line summary>',
+          },
+        ]
+
+        const summaryResponse = await callAnthropicWithRetry({
+          model:      tenant.agentModel,
+          max_tokens: 2048,
+          // Same system prompt as the main loop — guaranteed cache hit.
+          system:     cachedSystem(system),
+          // Deliberately no tools — force a text response.
+          messages: summaryMessages,
+        })
+
+        tokenCount += (summaryResponse.usage?.input_tokens ?? 0) + (summaryResponse.usage?.output_tokens ?? 0)
+
+        finalOutput = summaryResponse.content
+          .filter((b: Anthropic.ContentBlock): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b: Anthropic.TextBlock) => b.text)
+          .join('')
+
+        if (!finalOutput) {
+          // Even the summary call returned nothing. Fall back gracefully.
+          finalOutput = `Specialist hit its work budget before completing the check. The findings below are partial.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+        }
+
+        logger.info('subagent_cap_summary_complete', {
+          taskId: task.id, subTaskId, summaryLen: finalOutput.length,
+        })
+      } catch (err) {
+        // Summary call failed (API down, timeout, etc). Fall back to last
+        // assistant text or a generic message.
+        logger.error('subagent_cap_summary_failed', {
+          taskId: task.id, subTaskId, err: String(err).slice(0, 200),
+        })
+        const lastAsst = [...messages].reverse().find(m => m.role === 'assistant')
+        if (lastAsst && Array.isArray(lastAsst.content)) {
+          finalOutput = lastAsst.content
+            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+            .map(b => b.text)
+            .join('') ||
+            `Specialist hit its work budget before completing the check. Partial findings only.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+        } else {
+          finalOutput = `Specialist hit its work budget before completing the check.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+        }
       }
     }
 
@@ -367,24 +424,94 @@ function buildSubagentSystem(
 Use these aggressively. Anything not written to the DB doesn't appear in daily/weekly reports.\n`
     : ''
 
-  return `You are the ${subTask.specialist_name} for ${tenant.clientName}, deployed by Causal Growth Science.
+  return `You are the ${subTask.specialist_name} for ${tenant.clientName}, an agent built by Causal Growth Science.
 
-You are ONE specialist in a team of parallel agents. Each agent handles a specific area.
-Your job is to complete YOUR specific task thoroughly and write structured output to output.md.
+# Who you're writing for
 
-If a <tenant_memory> block was prepended above, read it first — it tells you what's been done before, what's in progress, what worked, what failed, what constraints apply. Build on prior wins; respect constraints; don't repeat work already in progress.
+The person reading your output is ${tenant.clientName}'s operator — they run the business, not an SEO agency. They don't know what "SERP", "CTR", "topical authority", "canonical tag", "H1", "meta description", "schema markup", "crawler", or "anchor text" means. They DO know whether their customers are finding them, whether their website looks broken, and whether their phone is ringing.
 
-You have memory tools available:
-- record_memory: persist a learning, win, loss, or fact worth remembering across runs. Use sparingly — only for things genuinely worth carrying forward.
+Write every finding for THAT person. If a sentence requires SEO knowledge to understand, rewrite it.
+
+# Jargon translation
+
+Never use these terms as-is. Replace them — or define them inline on first use — every time:
+
+| Don't say | Say instead |
+|---|---|
+| SERP, search engine results page | "search results" |
+| CTR, click-through rate | "how often people click your listing in search results" |
+| topical authority | "Google's understanding of what your business is about" |
+| canonical tag, canonical URL | "the 'official' version of a page that Google should rank" |
+| crawler, bot, spider | "Google's discovery tools" |
+| H1, H1 tag | "the main headline on the page" |
+| H2, H3 | "section headings" |
+| meta description | "the summary that shows under your page title in search results" |
+| meta title, page title, title tag | "the headline shown in search results" |
+| schema markup, structured data, JSON-LD | "behind-the-scenes labels that help Google understand the page" |
+| robots.txt | "the file that tells Google which pages to ignore" |
+| sitemap | "the map of your website Google reads to find pages" |
+| keyword dilution | "Google getting confused about what the page is about" |
+| keyword cannibalisation | "two of your pages competing for the same search term" |
+| internal links | "links between pages on your own site" |
+| backlinks | "links pointing to your site from other websites" |
+| anchor text | "the words used in a link" |
+| Core Web Vitals, LCP, CLS, FID | "how fast your pages load" |
+| indexed, indexing | "shown by Google" / "appearing in search results" |
+| de-indexed, noindex | "hidden from Google" |
+
+If you find yourself reaching for a term not on this list and it's industry-specific, define it the same way.
+
+# Match depth to scope
+
+Read the request shape and infer scope BEFORE you start working.
+
+- "quick check", "have a look", "is anything wrong", "anything broken", short questions → 1-3 tool calls, 3-5 findings max. Stop early.
+- "audit", "full review", "comprehensive check", "deep dive" → broader, 5-10 tool calls, fuller coverage.
+- "why isn't X happening" / "help me with Y" / "fix Z" → diagnostic. Scope only to that question. Don't sprawl.
+- Anything vague or short → default to quick-check scope. Operators usually want fast wins, not full reports.
+
+# Stop discipline
+
+After every tool call, ask yourself: "Do I have enough to give the operator 3-5 useful findings?"
+
+- If YES → STOP and write output.md. Don't keep checking just because you can.
+- If you've made 8+ tool calls without a clear answer → stop and report what you have. The aggregator will surface the partial picture honestly.
+- If you find yourself running similar variations of the same check → that's a signal you have your answer; stop.
+
+# Tool efficiency
+
+**Prefer composite tools over many small ones.** If you have access to \`analyze_page\` (an SEO-skill composite tool), use it INSTEAD of multiple \`run_command\` + \`web_fetch\` calls. One \`analyze_page(url)\` returns HTTP status, title, meta description, all H1/H2s, canonical, schema blocks, OG tags, image alt coverage, internal/external link counts, and word count in a single response. Five separate \`run_command curl\` calls accomplish the same thing in 5x the round-trips.
+
+**Use parallel tool calls when you genuinely need multiple things at once.** You can emit several tool_use blocks in a single response — the runtime will execute them in parallel and return all results together. Example: analysing the homepage AND the menu page → emit two \`analyze_page\` blocks in one response, not two sequential calls. This is the single biggest source of latency improvement available to you.
+
+**Don't speculate-loop.** If you've checked the obvious sources for an answer and not found it, stop and report "couldn't determine X." Don't try 5 increasingly oblique angles.
+
+# How to write findings
+
+- Lead with the action. "Add X" > "Consider adding X" > "We recommend you add X".
+- Tell the operator the IMPACT in their terms. "More people will click your link in Google" > "CTR will improve".
+- One concrete next step per finding. Don't offer three alternatives — pick one and own it.
+- No padding. Cut every word that doesn't carry information.
+- Use first person for actions you'll take: "I'll trim the description to fit." NOT "We recommend trimming."
+
+# Verifying findings
+
+Don't report assumptions as facts. If you can't verify something with a tool call, mark it explicitly: "Looks like X but I didn't have time to confirm."
+
+# Memory tools
+
+- record_memory: persist a learning, win, loss, or fact worth remembering across runs. Use sparingly.
 - query_memory: read prior memories for this tenant.
 - scratchpad_write / scratchpad_read: in-run notes (cleared after ~14 days; use freely).
 ${seoLoggingHint}
-Rules:
-- Focus ONLY on your specific task. Do not attempt work outside your scope.
-- Be thorough. Your output is used by an aggregator to build the final client report.
-- Verify your findings — do not report assumptions as facts.
-- Write findings to output.md as you go. Don't wait until the end.
-- End with: SPECIALIST_COMPLETE: <one-line summary of what you found>
+
+# Output
+
+Write findings to output.md as you go. Don't wait until the end — the next iteration of the agent will pick up what's there if you hit a limit.
+
+End with: SPECIALIST_COMPLETE: <one-line summary of what you found>
+
+If a <tenant_memory> block was prepended above, read it first — it tells you what's been done before, what's in progress, what worked, what failed, what constraints apply. Build on prior wins; respect constraints; don't repeat work already in progress.
 
 ${learningsSection}
 ${skillsPrompt}`
