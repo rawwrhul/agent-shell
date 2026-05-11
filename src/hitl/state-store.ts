@@ -24,6 +24,12 @@
 //   sheet_row_number INT                                   -- R3
 //   defer_until      TIMESTAMPTZ                           -- R3
 //   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()    -- R3
+//
+// R3.1: adds waitForApprovalResolution — the agent's wait path now polls
+// Postgres (the operational state) instead of Google Sheets. Sub-2-second
+// click-to-unblock vs the previous 15-second poll cadence on Sheets.
+// Sheets remains the persistent audit record, mirrored at request and
+// resolution time by the hooks/handlers.
 
 import type { Pool } from 'pg';
 import { logger } from '../logger';
@@ -106,6 +112,65 @@ export async function listPendingApprovals(pool: Pool, tenantId: string): Promis
   return rows;
 }
 
+// ── Wait ────────────────────────────────────────────────────────────
+
+/**
+ * R3.1 — Poll the approval_requests table for a resolution.
+ *
+ * Replaces the Sheets-poll path in the agent's wait loop. PG is the
+ * operational source of truth (Slack button updates land here first);
+ * Sheets is a persistent mirror updated separately. Polling PG keeps
+ * click-to-unblock under 2 seconds.
+ *
+ * Resolution semantics:
+ *   - status='approved'  → returns { status: 'approved', resolvedBy }
+ *   - status='rejected'  → returns { status: 'rejected', resolvedBy, rejectionReason }
+ *   - status='pending' with defer_until set → keeps polling until defer_until
+ *     elapses or the timeout hits (deferral is a soft "ask me later", not a
+ *     terminal decision; the agent should still wait for an explicit answer
+ *     during its run, then bail with a timeout if none comes)
+ *   - Status anything else → keep polling
+ *
+ * Throws on timeout (consistent with the prior Sheets-based contract).
+ */
+const POLL_INTERVAL_MS = 1_500;
+
+export async function waitForApprovalResolution(
+  pool: Pool,
+  approvalId: string,
+  timeoutMs: number,
+): Promise<{
+  status: 'approved' | 'rejected';
+  resolvedBy: string;
+  rejectionReason?: string;
+}> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = await getApproval(pool, approvalId);
+    if (!row) {
+      // Row doesn't exist yet (eventual-consistency window after insert) — keep polling
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (row.status === 'approved') {
+      return {
+        status: 'approved',
+        resolvedBy: row.resolvedBy ?? 'unknown',
+      };
+    }
+    if (row.status === 'rejected') {
+      return {
+        status: 'rejected',
+        resolvedBy: row.resolvedBy ?? 'unknown',
+        rejectionReason: row.rejectionReason ?? undefined,
+      };
+    }
+    // 'pending' (incl. with defer_until) → keep polling
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Approval ${approvalId} timed out after ${timeoutMs}ms`);
+}
+
 // ── Write ───────────────────────────────────────────────────────────
 
 export interface CreateApprovalInput {
@@ -170,6 +235,18 @@ export async function recordSlackMessageTs(
   );
 }
 
+/** R3.1 — store the Sheet row number once the Sheets append returns it. */
+export async function recordSheetRowNumber(
+  pool: Pool, approvalId: string, sheetRowNumber: number,
+): Promise<void> {
+  await pool.query(
+    `UPDATE approval_requests
+     SET sheet_row_number = $2, updated_at = NOW()
+     WHERE id = $1`,
+    [approvalId, sheetRowNumber],
+  );
+}
+
 export interface ResolveApprovalInput {
   approvalId:       string;
   decision:         'approved' | 'rejected' | 'deferred' | 'expired';
@@ -218,3 +295,5 @@ export async function resolveApproval(
   });
   return rows[0];
 }
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

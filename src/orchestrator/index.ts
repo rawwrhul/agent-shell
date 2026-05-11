@@ -10,6 +10,10 @@
 // tenant's memory context (wins, losses, in-progress threads, learnings,
 // constraints, preferences, facts) so planning decisions compound across
 // runs instead of starting from zero each time.
+//
+// R3.1: voice shift — the orchestrator's plan_summary (which gets posted
+// as the anchor's plan text) is now framed as "what I'm planning to do"
+// in first person, not transactional "spawned X specialists" language.
 
 import Anthropic      from '@anthropic-ai/sdk'
 import { v4 as uuid } from 'uuid'
@@ -31,7 +35,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
   const sessionId = uuid()
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: 'orchestrator', billingTag: tenant.billingTag, userId: task.slackUserId })
 
-  logger.info('orchestrator_start', { tenantId: task.tenantId, taskId: task.id })
+  logger.info('orchestrator_start', { tenantId: task.tenantId, taskId: task.id, trigger: task.trigger })
 
   const specialists = getSpecialists(tenant.agentType)
   const spawnedIds: string[] = []
@@ -85,7 +89,10 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
       input_schema: {
         type: 'object' as const,
         properties: {
-          plan_summary: { type: 'string', description: 'One sentence summarising which specialists were spawned and why.' },
+          plan_summary: {
+            type: 'string',
+            description: 'A first-person, scan-readable plan in 1-3 sentences. Lead with what you\'re planning to do, not which specialists you spawned. Example: "Going to check the homepage HTTP response and core meta tags, then audit the schema markup on the top 10 pages." NOT: "Spawned a single executor specialist to perform HTTP checks."',
+          },
         },
         required: ['plan_summary'],
       },
@@ -201,11 +208,29 @@ ${specList}
 - Call complete_planning when all spawns are done.
 - Do NOT attempt to do the work yourself. Your only tools are spawn_subagent and complete_planning.
 
+## Voice for plan_summary
+The plan_summary you pass to complete_planning is shown to the user in Slack as your stated intent for this run. Write it in first person, lead with the action, scan-readable on mobile.
+
+YES: "Going to audit the homepage HTTP response and schema markup, plus pull the top 10 ranking keywords for context."
+NO:  "Spawned a single executor specialist to perform a comprehensive technical SEO check on the tarino.au homepage covering HTTP/redirect behaviour, response headers, DNS, SSL, and on-page SEO signals."
+
+The first version respects the reader's time and signals intent. The second buries the action in implementation detail.
+
 ${buildTenantSkillsPrompt(tenant.skills)}`
 }
 
 function buildOrchestratorPrompt(task: AgentTask): string {
+  const triggerNote = (() => {
+    switch (task.trigger) {
+      case 'cron-daily':  return '(This is the automated daily run.)'
+      case 'cron-weekly': return '(This is the automated weekly audit.)'
+      case 'slack-command': return '(Triggered via /agent slash command.)'
+      default: return ''
+    }
+  })()
+
   return `Task from ${task.slackUserId}: ${task.prompt}
+${triggerNote ? '\n' + triggerNote : ''}
 
 Task ID: ${task.id}
 

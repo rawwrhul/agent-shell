@@ -1,6 +1,14 @@
 // src/hitl/handlers.ts
 //
 // Bolt action handler functions for the HITL approval buttons.
+//
+// R3.1 architecture:
+//   - PG is the source of truth for operational state — buttons update PG
+//     first; the agent's wait loop polls PG and unblocks within ~1.5s.
+//   - Sheet is the persistent audit record — we mirror the PG resolution
+//     to the Sheet (best-effort) so the persistent record stays accurate
+//     after a Slack button click.
+//   - Sheet mirroring failures are logged but never block the click flow.
 
 import type { WebClient } from '@slack/web-api';
 import { Pool } from 'pg';
@@ -11,6 +19,8 @@ import {
   resolveApproval,
   type ApprovalRow,
 } from './state-store';
+import { updateApprovalRowStatus } from './sheets';
+import { getTenant } from '../tenants/registry';
 
 let _pool: Pool | null = null;
 function pool(): Pool {
@@ -48,6 +58,11 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
 
   await editMessageToResolved(ctx, resolved, 'approved');
 
+  // Mirror to Sheet (best-effort) so the persistent record stays in sync.
+  await mirrorResolutionToSheet(resolved, 'approved', ctx.slackUserId).catch(() => {
+    /* swallowed — mirror failures already logged inside */
+  });
+
   await enqueueApprovalExecution(approval).catch((err) => {
     logger.error('approval_execute_enqueue_failed', {
       approvalId: ctx.approvalId, err: String(err),
@@ -55,7 +70,7 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
   });
 }
 
-export async function handleReject(ctx: ActionContext): Promise<void> {
+export async function handleReject(ctx: ActionContext, rejectionReason?: string): Promise<void> {
   const approval = await getApproval(pool(), ctx.approvalId);
   if (!approval || approval.status !== 'pending') return;
 
@@ -63,10 +78,14 @@ export async function handleReject(ctx: ActionContext): Promise<void> {
     approvalId: ctx.approvalId,
     decision:   'rejected',
     resolvedBy: ctx.slackUserId,
+    rejectionReason,
   });
   if (!resolved) return;
 
   await editMessageToResolved(ctx, resolved, 'rejected');
+
+  // Mirror to Sheet (best-effort)
+  await mirrorResolutionToSheet(resolved, 'rejected', ctx.slackUserId, rejectionReason).catch(() => {});
 }
 
 export async function handleDefer24h(ctx: ActionContext): Promise<void> {
@@ -74,7 +93,7 @@ export async function handleDefer24h(ctx: ActionContext): Promise<void> {
   if (!approval || approval.status !== 'pending') return;
 
   const deferUntil = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  await resolveApproval(pool(), {
+  const resolved = await resolveApproval(pool(), {
     approvalId: ctx.approvalId,
     decision:   'deferred',
     resolvedBy: ctx.slackUserId,
@@ -88,6 +107,11 @@ export async function handleDefer24h(ctx: ActionContext): Promise<void> {
   logger.info('approval_deferred', {
     approvalId: ctx.approvalId, by: ctx.slackUserId, until: deferUntil.toISOString(),
   });
+
+  // Mirror to Sheet (best-effort) — surfaces deferral on the audit record
+  if (resolved) {
+    await mirrorResolutionToSheet(resolved, 'deferred', ctx.slackUserId).catch(() => {});
+  }
 }
 
 export async function handleViewDraft(ctx: ActionContext, triggerId: string): Promise<void> {
@@ -123,6 +147,35 @@ export async function handleViewDraft(ctx: ActionContext, triggerId: string): Pr
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Mirror a PG resolution back to the Sheet row so the persistent audit
+ * record reflects the decision. Best-effort: any failure (Sheets API
+ * down, row not found, auth issue) is logged inside updateApprovalRowStatus
+ * and swallowed here. The PG row remains authoritative.
+ */
+async function mirrorResolutionToSheet(
+  approval: ApprovalRow,
+  decision: 'approved' | 'rejected' | 'deferred',
+  resolvedBy: string,
+  rejectionReason?: string,
+): Promise<void> {
+  try {
+    const tenant = await getTenant(approval.tenantId);
+    await updateApprovalRowStatus(tenant, {
+      approvalId:      approval.id,
+      rowNumber:       approval.sheetRowNumber,
+      status:          decision,
+      resolvedBy,
+      rejectionReason,
+    });
+  } catch (err) {
+    logger.warn('approval_sheet_mirror_tenant_lookup_failed', {
+      approvalId: approval.id, tenantId: approval.tenantId,
+      err: String(err).slice(0, 200),
+    });
+  }
+}
 
 async function editMessageToResolved(
   ctx: ActionContext,

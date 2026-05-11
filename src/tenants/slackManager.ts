@@ -62,6 +62,7 @@ export async function startTenantBot(tenant: TenantConfig) {
       prompt,
       slackChannelId: event.channel,
       slackUserId:    event.user ?? 'unknown',
+      trigger:        'slack-mention',
     })
 
     await say({
@@ -87,6 +88,7 @@ export async function startTenantBot(tenant: TenantConfig) {
           prompt,
           slackChannelId: command.channel_id,
           slackUserId:    command.user_id,
+          trigger:        'slack-command',
         })
         await respond({
           text: `✅ Task queued\n*Agent:* ${tenant.agentType}\n*Task ID:* \`${task.id}\``,

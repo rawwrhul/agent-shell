@@ -2,6 +2,14 @@
 //
 // Pure helpers for Block Kit construction. Every render module composes
 // from these so spacing, typography, and section structure stay consistent.
+//
+// R3.1: `normalizeSlackText` converts ChatGPT/Anthropic-style markdown
+// (which the LLM emits naturally) into Slack mrkdwn, applied at the
+// section/header boundary so all rendered text passes through one
+// chokepoint:
+//   [text](url)   → <url|text>
+//   **bold**      → *bold*
+//   __italic__    → _italic_
 
 import type {
   KnownBlock,
@@ -19,9 +27,10 @@ import type {
 
 export function header(text: string): HeaderBlock {
   // Slack truncates header text at 150 chars.
+  // Header is plain_text, so strip markdown syntax rather than convert it.
   return {
     type: 'header',
-    text: { type: 'plain_text', text: truncate(text, 150), emoji: true },
+    text: { type: 'plain_text', text: truncate(stripMarkdown(text), 150), emoji: true },
   };
 }
 
@@ -33,7 +42,7 @@ export function divider(): DividerBlock {
 export function section(text: string): SectionBlock {
   return {
     type: 'section',
-    text: { type: 'mrkdwn', text: truncate(text, 3000) },
+    text: { type: 'mrkdwn', text: truncate(normalizeSlackText(text), 3000) },
   };
 }
 
@@ -57,7 +66,7 @@ export function fieldsSection(fields: Array<{ label: string; value: string }>): 
     fields: trimmed.map(
       (f): MrkdwnElement => ({
         type: 'mrkdwn',
-        text: `*${f.label}*\n${f.value}`,
+        text: `*${f.label}*\n${normalizeSlackText(f.value)}`,
       })
     ),
   };
@@ -70,7 +79,7 @@ export function context(parts: string[]): ContextBlock {
     type: 'context',
     elements: parts
       .slice(0, 10)
-      .map((p): MrkdwnElement => ({ type: 'mrkdwn', text: p })),
+      .map((p): MrkdwnElement => ({ type: 'mrkdwn', text: normalizeSlackText(p) })),
   };
 }
 
@@ -184,6 +193,50 @@ export function escape(s: string): string {
     if (c === '>') return '&gt;';
     return '&amp;';
   });
+}
+
+/**
+ * Convert common ChatGPT/Anthropic markdown to Slack mrkdwn.
+ * Applied at the section/context/fields boundary so any LLM-emitted text
+ * renders correctly regardless of which renderer produced it.
+ *
+ * Conversions:
+ *   [text](url)   → <url|text>            (Slack link syntax)
+ *   **bold**      → *bold*                (Slack uses single asterisk)
+ *   __italic__    → _italic_              (Slack uses single underscore)
+ *
+ * Preserves:
+ *   `inline code`, ```code blocks```, *single asterisk* (already valid),
+ *   _single underscore_ (already valid), URLs already in Slack format.
+ *
+ * Idempotent — safe to call multiple times on the same string.
+ */
+export function normalizeSlackText(s: string): string {
+  if (!s) return s;
+  return s
+    // Markdown links → Slack links. Skip if angle brackets already present
+    // (already converted), and skip the rare case where url contains spaces
+    // or parens by limiting url chars.
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<$2|$1>')
+    // Bold (double asterisk) → Slack bold (single asterisk).
+    // Greedy non-asterisk match keeps simple cases right; nested ** is unusual.
+    .replace(/\*\*([^*\n]+)\*\*/g, '*$1*')
+    // Italic (double underscore) → Slack italic (single underscore).
+    .replace(/__([^_\n]+)__/g, '_$1_');
+}
+
+/**
+ * Strip markdown syntax entirely. Used for header text (plain_text type
+ * doesn't render mrkdwn, so we want clean text not markup characters).
+ */
+export function stripMarkdown(s: string): string {
+  if (!s) return s;
+  return s
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')   // [text](url) → text
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')        // **bold** → bold
+    .replace(/__([^_\n]+)__/g, '$1')            // __italic__ → italic
+    .replace(/\*([^*\n]+)\*/g, '$1')            // *emph* → emph
+    .replace(/`([^`\n]+)`/g, '$1');             // `code` → code
 }
 
 export function formatTime(d: Date, tz = 'Australia/Sydney'): string {

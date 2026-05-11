@@ -9,6 +9,9 @@
 //   4. Record that the schedule fired
 //
 // The orchestrator handles the rest exactly like a Slack-mentioned run.
+//
+// R3.1: stamps `trigger: 'cron-daily' | 'cron-weekly'` on the task so the
+// aggregator can pick the right system prompt and FinalReport shape.
 
 import { Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
@@ -21,6 +24,7 @@ import {
 import { recordScheduleFired } from './index';
 import { getTenant } from '../tenants/registry';
 import { enqueueTask } from '../queue/producer';
+import type { TaskTrigger } from '../types';
 
 let _worker: Worker<ScheduledRunPayload> | null = null;
 
@@ -72,18 +76,21 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     return;
   }
 
+  const trigger: TaskTrigger = runKind === 'daily' ? 'cron-daily' : 'cron-weekly';
+
   const task = await enqueueTask({
     tenantId,
     agentType:      tenant.agentType,
     prompt:         buildPromptForRunKind(runKind, tenant.clientName),
     slackChannelId: tenant.slackChannelId,
     slackUserId:    '_cron_',
+    trigger,
   });
 
   await recordScheduleFired(tenantId, runKind, new Date());
 
   logger.info('schedule_run_enqueued', {
-    tenantId, runKind, taskId: task.id,
+    tenantId, runKind, trigger, taskId: task.id,
   });
 }
 

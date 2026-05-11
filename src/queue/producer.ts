@@ -1,7 +1,7 @@
 import { Queue }    from 'bullmq'
 import { v4 as uuid } from 'uuid'
 import { config }   from '../config'
-import { AgentTask, AgentJob } from '../types'
+import { AgentTask, AgentJob, TaskTrigger } from '../types'
 import { logger }   from '../logger'
 
 const connection = { url: process.env.REDIS_URL }
@@ -15,18 +15,34 @@ export const agentQueue = new Queue<AgentJob>('agent-jobs', {
 })
 
 export async function enqueueTask(params: {
-  tenantId: string; agentType: string; prompt: string
-  slackChannelId: string; slackUserId: string
-  metadata?: Record<string, unknown>; priority?: number
+  tenantId: string
+  agentType: string
+  prompt: string
+  slackChannelId: string
+  slackUserId: string
+  /** R3.1 — what initiated this task. Defaults to 'slack-mention'. */
+  trigger?: TaskTrigger
+  metadata?: Record<string, unknown>
+  priority?: number
 }): Promise<AgentTask> {
   const task: AgentTask = {
-    id: uuid(), tenantId: params.tenantId, agentType: params.agentType,
-    prompt: params.prompt, slackChannelId: params.slackChannelId,
-    slackUserId: params.slackUserId, metadata: params.metadata, createdAt: new Date(),
+    id: uuid(),
+    tenantId: params.tenantId,
+    agentType: params.agentType,
+    prompt: params.prompt,
+    slackChannelId: params.slackChannelId,
+    slackUserId: params.slackUserId,
+    trigger: params.trigger ?? 'slack-mention',
+    metadata: params.metadata,
+    createdAt: new Date(),
   }
   await agentQueue.add('orchestrate', { jobType: 'orchestrate', task } as AgentJob,
     { priority: params.priority ?? 5, jobId: task.id })
-  logger.info('task_enqueued', { tenantId: params.tenantId, taskId: task.id })
+  logger.info('task_enqueued', {
+    tenantId: params.tenantId,
+    taskId: task.id,
+    trigger: task.trigger,
+  })
   return task
 }
 

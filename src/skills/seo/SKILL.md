@@ -49,3 +49,116 @@ The seo/ skill provides these structured logging tools. Use them throughout your
 - Always pass the pinned `target_domain` from the tenant config when crawling — never guess. If `target_domain` isn't set, halt and surface an opportunity called "tenant config missing target_domain".
 - Always log structured outcomes (`log_seo_action`, `log_opportunity`, `snapshot_metrics`) — even if you also produce a written summary. The structured records drive the daily/weekly reports.
 - Never repeat work that's been logged in the last 7 days — `query_opportunities` and `query_clusters` first.
+
+## Action surface and approval gating
+
+Every action below is gated by `propose_action` unless explicitly marked as analysis. The default priority is the suggested floor — escalate to a higher priority (P0 highest) when blast radius warrants it.
+
+**Workflow for every gated action:**
+1. Identify the action you intend to take (must map to an `ActionType` below).
+2. Call `propose_action` with: the proposed `ActionType` as the `toolName`, the inputs the action would receive in `toolInput`, a 1-line `proposedAction` summary, `detail[]` array of what specifically would change (URLs, before/after text, schema diffs), `whyPriority` (one sentence reasoning), and a `priority` and `riskLevel`.
+3. Wait for the approval to resolve. Approved actions become eligible for execution (via the upcoming execution layer); rejected actions surface a `rationale` you should respect for the rest of the run.
+4. Once executed, call `log_seo_action` with the matching `actionType` to record the shipped work.
+
+### Page content (default P1 — visible, reversible)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `copy_updated` | Body / hero / inline copy on an existing page | P1 |
+| `cta_updated` | Button labels, form CTAs, microcopy | P1 |
+| `meta_title_rewritten` | `<title>` tag | P1 |
+| `meta_description_rewritten` | `<meta name="description">` | P1 |
+| `alt_text_added` | `<img alt="...">` — small but accumulates | P2 |
+| `og_metadata_updated` | Open Graph + Twitter Card tags (affects social previews) | P1 |
+| `image_uploaded` | New image asset on the site | P1 |
+| `image_replaced` | Existing image swapped | P1 |
+| `cluster_page_drafted` | Draft only — no publish | P2 |
+| `cluster_page_published` | Going live | P1 |
+
+### Schema / structured data (default P1 — high SEO impact)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `schema_added` | New JSON-LD block (Product, FAQ, Restaurant, etc.) | P1 |
+| `schema_updated` | Modifying existing schema markup | P1 |
+
+### Internal linking (default P2 — small individually, large in aggregate)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `internal_link_added` | One new internal link | P2 |
+| `orphan_page_resolved` | Linking to a previously-orphan page | P2 |
+
+### Site structure (default P0/P1 — easy to break things)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `navigation_updated` | Header / footer / nav menu — affects every page | P0 |
+| `url_slug_changed` | URL change — **ALWAYS pair with `redirect_added` in the same approval** | P0 |
+| `redirect_added` | New 301 / 302 rule | P0 |
+| `redirect_removed` | Removing an existing redirect — breaks any external link relying on it | P0 |
+
+### Indexing controls (default P0 — can deindex the site if wrong)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `robots_txt_updated` | The single highest-risk file on the site | P0 |
+| `noindex_added` / `_removed` | Per-page indexing control | P0 |
+| `nofollow_added` / `_removed` | Per-link or per-page follow control | P1 |
+| `canonical_updated` | Tells Google "the real version is at X" | P0 |
+| `hreflang_updated` | Multi-region/language signals | P1 |
+| `sitemap_updated` | The crawl discovery surface | P1 |
+
+### Search Console actions (default P1)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `gsc_url_inspection_requested` | Asks Google to re-crawl a URL — safe, but logable | P2 |
+| `gsc_sitemap_submitted` | Pings a sitemap to GSC | P2 |
+| `gsc_disavow_uploaded` | Tells Google to ignore inbound links — **almost always P0** | P0 |
+
+### Off-site / public-facing (default P1 — brand-sensitive)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `reddit_answer_drafted` / `linkedin_post_drafted` / `quora_answer_drafted` | Draft only — no publish | P2 |
+| `reddit_answer_posted` / `linkedin_post_posted` / `quora_answer_posted` | Live post — public, brand voice | P1 |
+| `review_responded` | Public response to a Google review — irreversible once posted | P1 |
+| `gbp_post_published` | Google Business Profile post (offers, events) | P1 |
+| `gbp_qa_responded` | Public Q&A response on the GBP | P1 |
+
+### Outbound communications (default P1 — irreversible once sent)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `backlink_outreach_drafted` / `email_outreach_drafted` / `haro_response_drafted` / `partnership_outreach_drafted` | Draft only | P2 |
+| `backlink_outreach_sent` / `email_outreach_sent` / `haro_response_sent` / `partnership_outreach_sent` | Sending the message | P1 |
+
+### Google Business Profile changes (default P1 — local SEO + customer-facing)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `gbp_hours_updated` | Business hours shown in Google Maps + SERP | P1 |
+| `gbp_photos_uploaded` | Public photo assets | P1 |
+| `gbp_attribute_updated` | Wifi, dining options, accessibility, etc. | P1 |
+| `gbp_contact_updated` | Phone / address / website on the GBP | P0 |
+
+### Local-business / restaurant-specific (default P1 — Tarino-specific)
+
+| Action type | What it changes | Priority floor |
+|---|---|---|
+| `menu_item_added` / `menu_item_updated` / `menu_item_removed` | Menu items on the site | P1 |
+| `pricing_updated` | Price displayed publicly | P1 |
+| `hours_updated` | Site-side hours (separate from GBP) | P1 |
+| `booking_link_updated` | Reservation / order link | P1 |
+| `event_added` | Public event listing | P2 |
+| `promotion_published` | Special offer / discount campaign | P1 |
+
+### Analysis / read-only (NO approval required)
+
+These do not change the public site and do not require `propose_action`:
+- `gsc_snapshot_captured` — pulling metrics from GSC
+- `serp_check_run` — ranking checks
+- `competitor_audit_run` — scraping competitor pages for analysis
+- `audit_run` — general analysis pass
+- `opportunity_surfaced` — recording a finding (via `log_opportunity`)

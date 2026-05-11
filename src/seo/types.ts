@@ -5,30 +5,76 @@
 // store can evolve independently of the rendering layer.
 
 export type ActionType =
-  // Content
+  // ── Content (page-level copy/markup the user sees) ───────────────────
   | 'cluster_brief_drafted'
   | 'cluster_page_drafted'
   | 'cluster_page_published'
   | 'meta_description_rewritten'
   | 'meta_title_rewritten'
   | 'alt_text_added'
-  // Schema
+  | 'copy_updated'              // R3.1 — body/hero/inline copy edits on existing pages
+  | 'cta_updated'               // R3.1 — button labels, form CTAs
+  | 'og_metadata_updated'       // R3.1 — Open Graph + Twitter Cards
+  | 'image_uploaded'            // R3.1 — new image asset
+  | 'image_replaced'            // R3.1 — existing image swapped
+  // ── Schema / structured data ─────────────────────────────────────────
   | 'schema_added'
   | 'schema_updated'
-  // Linking
+  // ── Internal linking ─────────────────────────────────────────────────
   | 'internal_link_added'
   | 'orphan_page_resolved'
-  // AEO / off-site
+  // ── Site structure (R3.1) ────────────────────────────────────────────
+  | 'navigation_updated'        // header / footer / nav menu changes
+  | 'url_slug_changed'          // ALWAYS requires a paired redirect
+  | 'redirect_added'            // 301 / 302
+  | 'redirect_removed'
+  // ── Indexing controls (R3.1 — highest blast radius) ──────────────────
+  | 'robots_txt_updated'
+  | 'noindex_added'
+  | 'noindex_removed'
+  | 'nofollow_added'
+  | 'nofollow_removed'
+  | 'canonical_updated'
+  | 'hreflang_updated'
+  | 'sitemap_updated'
+  // ── Google Search Console actions (R3.1) ─────────────────────────────
+  | 'gsc_url_inspection_requested'
+  | 'gsc_sitemap_submitted'
+  | 'gsc_disavow_uploaded'      // highest-risk GSC action — can wipe link equity
+  // ── AEO / off-site posting ───────────────────────────────────────────
   | 'reddit_answer_drafted'
   | 'reddit_answer_posted'
   | 'linkedin_post_drafted'
   | 'linkedin_post_posted'
   | 'quora_answer_drafted'
   | 'quora_answer_posted'
-  // Outreach
+  // ── Outreach (drafted vs sent) ───────────────────────────────────────
   | 'backlink_outreach_drafted'
   | 'backlink_outreach_sent'
-  // Analysis (no live change)
+  | 'email_outreach_drafted'    // R3.1 — generic cold outreach (not backlink-specific)
+  | 'email_outreach_sent'
+  | 'haro_response_drafted'     // R3.1 — Help A Reporter Out
+  | 'haro_response_sent'
+  | 'partnership_outreach_drafted'  // R3.1
+  | 'partnership_outreach_sent'
+  // ── Google Business Profile (R3.1 — critical for local businesses) ───
+  | 'gbp_hours_updated'
+  | 'gbp_photos_uploaded'
+  | 'gbp_post_published'
+  | 'gbp_attribute_updated'     // wifi, dining options, accessibility, etc.
+  | 'gbp_contact_updated'       // phone, address, website
+  | 'gbp_qa_responded'          // Q&A tab on the profile
+  | 'review_responded'          // GBP review response — public, brand-sensitive
+  // ── Local / restaurant-specific (R3.1) ───────────────────────────────
+  | 'menu_item_added'
+  | 'menu_item_updated'
+  | 'menu_item_removed'
+  | 'pricing_updated'
+  | 'hours_updated'             // site-side hours; distinct from gbp_hours_updated
+  | 'booking_link_updated'
+  | 'event_added'
+  | 'promotion_published'
+  // ── Analysis / read-only (NO approval required) ──────────────────────
   | 'gsc_snapshot_captured'
   | 'serp_check_run'
   | 'competitor_audit_run'
