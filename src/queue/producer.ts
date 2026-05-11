@@ -1,10 +1,15 @@
 import { Queue }    from 'bullmq'
 import { v4 as uuid } from 'uuid'
-import { config }   from '../config'
 import { AgentTask, AgentJob, TaskTrigger } from '../types'
 import { logger }   from '../logger'
+import { createRedisConnection } from '../lib/redis'
 
-const connection = { url: process.env.REDIS_URL }
+// Single shared connection for the agent-jobs queue. Configured via
+// createRedisConnection for Upstash compatibility (TLS, retries, reconnect).
+const connection = createRedisConnection({
+  url:   process.env.REDIS_URL,
+  label: 'agent-jobs-queue',
+})
 
 export const agentQueue = new Queue<AgentJob>('agent-jobs', {
   connection,
@@ -53,7 +58,6 @@ export async function enqueueSubagentJob(params: { task: AgentTask; subTaskId: s
   logger.info('subagent_enqueued', { taskId: params.task.id, subTaskId: params.subTaskId })
 }
 
-// jobId dedup ensures only one aggregation job fires even if two subagents complete simultaneously
 export async function enqueueAggregationJob(task: AgentTask) {
   await agentQueue.add('aggregate',
     { jobType: 'aggregate', task } as AgentJob,

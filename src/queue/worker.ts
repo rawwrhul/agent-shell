@@ -8,8 +8,14 @@ import { runAggregator }    from '../orchestrator/aggregator'
 import { presenter }        from '../core/slack'
 import { getTokenSpend }    from '../memory/postgres'
 import { logger }           from '../logger'
+import { createRedisConnection } from '../lib/redis'
 
-const connection = { url: process.env.REDIS_URL }
+// Single shared connection for the agent-jobs worker. Configured via
+// createRedisConnection for Upstash compatibility (TLS, retries, reconnect).
+const connection = createRedisConnection({
+  url:   process.env.REDIS_URL,
+  label: 'agent-jobs-worker',
+})
 
 const worker = new Worker<AgentJob>(
   'agent-jobs',

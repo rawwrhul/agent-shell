@@ -12,11 +12,15 @@
 //
 // R3.1: stamps `trigger: 'cron-daily' | 'cron-weekly'` on the task so the
 // aggregator can pick the right system prompt and FinalReport shape.
+//
+// Hotfix: uses createRedisConnection helper so Upstash TLS, reconnect
+// strategy, and BullMQ-required options are applied consistently with the
+// rest of the codebase.
 
 import { Worker, type Job } from 'bullmq';
-import IORedis from 'ioredis';
 import { config } from '../config';
 import { logger } from '../logger';
+import { createRedisConnection } from '../lib/redis';
 import {
   SCHEDULE_QUEUE_NAME,
   type ScheduledRunPayload, type RunKind,
@@ -31,11 +35,11 @@ let _worker: Worker<ScheduledRunPayload> | null = null;
 export function startScheduleWorker(): Worker<ScheduledRunPayload> {
   if (_worker) return _worker;
 
-  const connection = new IORedis({
-    host: config.REDIS_HOST,
-    port: config.REDIS_PORT,
+  const connection = createRedisConnection({
+    host:     config.REDIS_HOST,
+    port:     config.REDIS_PORT,
     password: config.REDIS_PASSWORD,
-    maxRetriesPerRequest: null,
+    label:    'scheduler-worker',
   });
 
   _worker = new Worker<ScheduledRunPayload>(
