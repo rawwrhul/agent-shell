@@ -5,6 +5,7 @@ import { enqueueTask } from '../queue/producer'
 import { getRunHistory } from '../memory/postgres'
 import { getQueueMetrics } from '../queue/producer'
 import { logger } from '../logger'
+import { registerHitlActionHandlers } from '../hitl'
 
 /**
  * Map of tenantId → running Slack App instance. Exported so `core/slack`
@@ -117,6 +118,7 @@ export async function startTenantBot(tenant: TenantConfig) {
     }
   })
 
+  registerHitlActionHandlers(app)
   await app.start()
   apps.set(tenant.tenantId, app)
   logger.info('tenant_bot_started', { tenantId: tenant.tenantId, client: tenant.clientName })

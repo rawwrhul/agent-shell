@@ -1,15 +1,18 @@
 // src/core/slack/blocks/weekly-audit.ts
 //
-// Weekly audit report. The strategic, comprehensive view — posted as a
-// channel message at the start of the week (Mon 8am cron) or on demand.
+// Weekly audit report. The strategic, comprehensive view — rendered inline
+// in the anchor at the end of the weekly cron run (Monday 8am) or on demand.
+//
+// R3 change: added TL;DR section at the top (3-5 strategic bullets).
 //
 // Structure:
 //   Header + summary
+//   ── TL;DR (R3 NEW)
 //   ── State of play (scorecard fields)
-//   ── Top 3 leverage moves
+//   ── Top leverage moves
 //   ── Cluster progress
 //   ── Risk flags
-//   ── Footer (approval queue, next audit, on-demand command)
+//   ── Footer
 
 import type { KnownBlock } from '@slack/web-api';
 import {
@@ -50,6 +53,13 @@ export function renderWeeklyAudit(report: WeeklyAuditReport): RenderedMessage {
     header(headline),
     context([triggerNote, `Week of ${formatDate(report.weekStart)}`]),
     section(summary),
+
+    // ── TL;DR (R3 NEW) ────────────────────────────────────────────
+    report.tldr.length > 0 && divider(),
+    report.tldr.length > 0 && titledSection(
+      'TL;DR',
+      report.tldr.map((t) => `•  ${t}`).join('\n')
+    ),
 
     // ── State of play ────────────────────────────────────────────
     report.stateOfPlay.length > 0 && divider(),
@@ -153,10 +163,10 @@ function priorityToRow(p: Priority): PriorityRow {
 
 function clusterToItem(c: ClusterStatus): ListItem {
   const icon = c.state === 'complete'
-    ? ':white_check_mark:'
+    ? '✅'
     : c.state === 'in_progress'
-      ? ':large_green_circle:'
-      : ':white_circle:';
+      ? '🟢'
+      : '⚪';
 
   const pct = c.briefsTotal > 0
     ? `${Math.round((c.briefsLanded / c.briefsTotal) * 100)}%`
@@ -186,10 +196,10 @@ function buildClusterDetail(c: ClusterStatus): string | undefined {
 
 function riskToItem(r: RiskFlag): ListItem {
   const icon = r.severity === 'urgent'
-    ? ':rotating_light:'
+    ? '🚨'
     : r.severity === 'act_soon'
-      ? ':warning:'
-      : ':small_orange_diamond:';
+      ? '⚠️'
+      : '🔸';
 
   const meta = r.severity === 'urgent'
     ? 'urgent'

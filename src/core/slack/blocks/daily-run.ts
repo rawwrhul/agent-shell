@@ -1,15 +1,22 @@
 // src/core/slack/blocks/daily-run.ts
 //
-// Daily run report. Posted as a channel message (not threaded) at the end
-// of every cron-triggered or on-demand run.
+// Daily run report. Renders inline in the anchor message when phase
+// transitions to 'complete' on a cron-triggered (or on-demand) daily run.
 //
-// Structure mirrors the design mock:
+// R3 changes:
+//   - Added TL;DR section at the top (3-5 outcome-focused bullets)
+//   - Awaiting-approval items now render with inline action buttons
+//     (View draft / Approve / Reject / Defer 24h / Open in Sheets)
+//     instead of just a `Review →` link
+//
+// Structure:
 //   Header + summary line
-//   ── Shipped overnight (executed actions w/ outcomes)
+//   ── TL;DR (R3 NEW)
+//   ── Shipped overnight
 //   ── New opportunities surfaced
 //   ── Queued for today
-//   ── Awaiting your approval (HITL)
-//   ── Footer (next run, on-demand command, workspace link)
+//   ── Awaiting your approval (with inline buttons)
+//   ── Footer
 
 import type { KnownBlock } from '@slack/web-api';
 import {
@@ -19,6 +26,7 @@ import {
   divider,
   titledSection,
   itemList,
+  actions,
   fallbackText,
   formatTime,
   formatDate,
@@ -26,6 +34,7 @@ import {
   compact,
   capBlocks,
   type ListItem,
+  type ButtonSpec,
 } from './shared';
 import type {
   RenderedMessage,
@@ -48,6 +57,13 @@ export function renderDailyRun(report: DailyRunReport): RenderedMessage {
     header(headline),
     context([triggerNote, formatDate(report.runDate)]),
     section(summary),
+
+    // ── TL;DR (R3 NEW) ────────────────────────────────────────────
+    report.tldr.length > 0 && divider(),
+    report.tldr.length > 0 && titledSection(
+      'TL;DR',
+      report.tldr.map((t) => `•  ${t}`).join('\n')
+    ),
 
     // ── Shipped overnight ─────────────────────────────────────────
     report.shippedActions.length > 0 && divider(),
@@ -79,15 +95,13 @@ export function renderDailyRun(report: DailyRunReport): RenderedMessage {
       report.queuedForToday.map(queuedToItem)
     ),
 
-    // ── Awaiting approval (HITL) ─────────────────────────────────
+    // ── Awaiting approval (R3: inline action buttons) ─────────────
     report.awaitingApproval.length > 0 && divider(),
     report.awaitingApproval.length > 0 && titledSection(
-      'Awaiting your approval',
+      '🔔 Awaiting your call',
       awaitingSummaryLine(report.awaitingApproval)
     ),
-    report.awaitingApproval.length > 0 && itemList(
-      report.awaitingApproval.map(approvalToItem)
-    ),
+    ...renderApprovalItemsWithActions(report.awaitingApproval),
 
     // ── Empty-state ──────────────────────────────────────────────
     isEmpty(report) && divider(),
@@ -158,7 +172,7 @@ function awaitingSummaryLine(items: ApprovalItem[]): string {
 
 function shippedToItem(a: ShippedAction): ListItem {
   return {
-    icon: a.status === 'success' ? ':large_green_circle:' : ':large_orange_circle:',
+    icon: a.status === 'success' ? '🟢' : '🟡',
     title: a.title,
     detail: a.detail,
     meta: formatTime(a.executedAt),
@@ -167,7 +181,7 @@ function shippedToItem(a: ShippedAction): ListItem {
 
 function opportunityToItem(o: Opportunity): ListItem {
   return {
-    icon: ':small_orange_diamond:',
+    icon: '🔸',
     title: o.description,
     meta: o.priority,
   };
@@ -175,22 +189,55 @@ function opportunityToItem(o: Opportunity): ListItem {
 
 function queuedToItem(q: QueuedAction): ListItem {
   return {
-    icon: ':white_circle:',
+    icon: '○',
     title: q.title,
     meta: q.estimateMinutes ? `~${q.estimateMinutes} min` : undefined,
   };
 }
 
-function approvalToItem(a: ApprovalItem): ListItem {
-  const detail = a.approvalUrl
-    ? `${a.detail ?? ''}${a.detail ? ' · ' : ''}<${a.approvalUrl}|Review →>`
-    : a.detail;
-  return {
-    icon: ':red_circle:',
-    title: a.title,
-    detail,
-    meta: formatRelative(a.pendingSince),
-  };
+// ── R3: Approval items with inline action buttons ───────────────────
+
+function renderApprovalItemsWithActions(items: ApprovalItem[]): KnownBlock[] {
+  const blocks: KnownBlock[] = [];
+  for (const item of items) {
+    const dot = severityDot(item.severity);
+    const pendingLabel = `_pending ${formatRelative(item.pendingSince)}_`;
+    blocks.push(section(
+      `${dot}  *${item.title}*\n` +
+      (item.detail ? `${item.detail}\n` : '') +
+      pendingLabel
+    ));
+    blocks.push(buildApprovalActions(item));
+  }
+  return blocks;
+}
+
+function severityDot(severity?: ApprovalItem['severity']): string {
+  switch (severity) {
+    case 'critical': return '🔴';
+    case 'high':     return '🟠';
+    case 'medium':   return '🟡';
+    case 'low':      return '⚪';
+    default:         return '🟡';
+  }
+}
+
+function buildApprovalActions(item: ApprovalItem): KnownBlock {
+  const buttons: ButtonSpec[] = [
+    { actionId: 'approval_view_draft', text: 'View draft', value: item.id },
+    { actionId: 'approval_approve',    text: 'Approve',    value: item.id, style: 'primary' },
+    { actionId: 'approval_reject',     text: 'Reject',     value: item.id, style: 'danger' },
+    { actionId: 'approval_defer',      text: 'Defer 24h',  value: item.id },
+  ];
+  if (item.approvalUrl) {
+    buttons.push({
+      actionId: 'approval_open_sheets',
+      text: 'Open in Sheets ↗',
+      value: item.id,
+      url: item.approvalUrl,
+    });
+  }
+  return actions(`approval_${item.id}`, buttons);
 }
 
 // ── Footer ──────────────────────────────────────────────────────────
@@ -213,7 +260,6 @@ function formatNextRunLabel(d: Date): string {
   const diffHr = (d.getTime() - now.getTime()) / 3_600_000;
 
   if (diffHr < 18) {
-    // Same / next morning
     return `today ${formatTime(d)}`;
   }
   if (diffHr < 36) {

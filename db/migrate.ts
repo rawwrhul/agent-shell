@@ -1,5 +1,6 @@
 import { Pool } from 'pg'
 import 'dotenv/config'
+import { runR3Migration } from './migrations/r3-tenant-schedules-and-domain'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -287,6 +288,8 @@ async function migrate() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_run_scratchpad_run_key
     ON run_scratchpad (run_id, key)`)
+
+  await runR3Migration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

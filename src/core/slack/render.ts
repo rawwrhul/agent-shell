@@ -1,18 +1,15 @@
 // src/core/slack/render.ts
 //
-// As of Rollout 2: pure rendering of RunState → Block Kit RenderedMessage.
-// NO I/O of any kind in this file — no DB, no Slack API, no logger.
-//
-// This module is the adapter between agent-shell's internal RunState shape
-// and the Block Kit builders in ./blocks/. Every named export preserves its
-// previous signature *from presenter.ts's perspective*; only the return type
-// changed (string → RenderedMessage). presenter.ts passes both `text`
-// (mobile push fallback) and `blocks` (rich layout) through to Slack's API.
+// Rollout 2: pure rendering of RunState → Block Kit RenderedMessage.
+// Rollout 3: when state.finalReport is structured (R3 shape), pass it
+// through to the anchor renderer instead of just the summary string —
+// the anchor renderer handles delegation to ad-hoc / daily / weekly.
 
 import type {
   RunState, SpecialistEntry,
   ApprovalRequestInput, ApprovalResolvedInput, BudgetWarningInput,
-} from './types'
+} from './types';
+import { isStructuredReport } from './types';
 import {
   renderAnchor as renderAnchorBlocks,
   renderSpecialistThread,
@@ -26,19 +23,32 @@ import {
   type ApprovalRequest,
   type ApprovalResolution,
   type RenderedMessage,
-} from './blocks'
-import { header, section, context, fallbackText } from './blocks/shared'
+  type FinalReport,
+} from './blocks';
+import { header, section, context, fallbackText } from './blocks/shared';
 
-// ────────────────────────────────────────────────────────────────────────────
-// Anchor — edited in place over the lifetime of the run
-// ────────────────────────────────────────────────────────────────────────────
+// ── Anchor ──────────────────────────────────────────────────────────
 
 export function renderAnchor(state: RunState): RenderedMessage {
-  return renderAnchorBlocks(adaptRunStateToAnchor(state))
+  return renderAnchorBlocks(adaptRunStateToAnchor(state));
 }
 
 function adaptRunStateToAnchor(state: RunState): AnchorState {
-  const specialists = Object.values(state.specialists).map(adaptSpecialist)
+  const specialists = Object.values(state.specialists).map(adaptSpecialist);
+
+  // R3: narrow finalReport into structured vs legacy via type guard.
+  let finalReport: FinalReport | undefined;
+  let finalSummary: string | undefined;
+  if (state.finalReport) {
+    if (isStructuredReport(state.finalReport)) {
+      // Discard the marker prop — AnchorState.finalReport only wants FinalReport
+      const { renderedInAnchor: _r, ...rest } = state.finalReport;
+      finalReport = rest as FinalReport;
+    } else if (state.phase === 'complete') {
+      finalSummary = state.finalReport.summaryText;
+    }
+  }
+
   return {
     tenantName: state.clientName,
     runId: state.taskId,
@@ -48,18 +58,16 @@ function adaptRunStateToAnchor(state: RunState): AnchorState {
     prompt: state.prompt,
     planSummary: state.planSummary,
     specialists,
-    finalSummary:
-      state.phase === 'complete' && state.finalReport
-        ? state.finalReport.summaryText
-        : undefined,
+    finalReport,                     // R3: structured shape, anchor delegates
+    finalSummary,                    // legacy: summary string fallback
     errorMessage: state.errorSummary,
-  }
+  };
 }
 
 function adaptSpecialist(s: SpecialistEntry): SpecialistState {
   switch (s.state.status) {
     case 'queued':
-      return { id: s.type, name: s.name, status: 'pending' }
+      return { id: s.type, name: s.name, status: 'pending' };
     case 'running':
       return {
         id: s.type,
@@ -67,7 +75,7 @@ function adaptSpecialist(s: SpecialistEntry): SpecialistState {
         status: 'in_progress',
         startedAt: new Date(s.state.startedAt),
         summary: s.state.lastNote,
-      }
+      };
     case 'complete':
       return {
         id: s.type,
@@ -76,7 +84,7 @@ function adaptSpecialist(s: SpecialistEntry): SpecialistState {
         startedAt: new Date(s.state.startedAt),
         finishedAt: new Date(s.state.completedAt),
         summary: s.state.summary,
-      }
+      };
     case 'failed':
       return {
         id: s.type,
@@ -85,17 +93,15 @@ function adaptSpecialist(s: SpecialistEntry): SpecialistState {
         startedAt: new Date(s.state.startedAt),
         finishedAt: new Date(s.state.failedAt),
         summary: s.state.error,
-      }
+      };
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Thread posts — per-specialist completion or failure
-// ────────────────────────────────────────────────────────────────────────────
+// ── Thread posts — per-specialist completion or failure ─────────────
 
 export function renderSpecialistComplete(s: SpecialistEntry): RenderedMessage {
   if (s.state.status !== 'complete') {
-    return { text: '', blocks: [] }
+    return { text: '', blocks: [] };
   }
   const reply: SpecialistThreadReply = {
     specialistName: s.name,
@@ -103,13 +109,13 @@ export function renderSpecialistComplete(s: SpecialistEntry): RenderedMessage {
     summary: s.state.summary,
     startedAt: new Date(s.state.startedAt),
     finishedAt: new Date(s.state.completedAt),
-  }
-  return renderSpecialistThread(reply)
+  };
+  return renderSpecialistThread(reply);
 }
 
 export function renderSpecialistFailed(s: SpecialistEntry): RenderedMessage {
   if (s.state.status !== 'failed') {
-    return { text: '', blocks: [] }
+    return { text: '', blocks: [] };
   }
   const reply: SpecialistThreadReply = {
     specialistName: s.name,
@@ -118,31 +124,21 @@ export function renderSpecialistFailed(s: SpecialistEntry): RenderedMessage {
     errorMessage: s.state.error,
     startedAt: new Date(s.state.startedAt),
     finishedAt: new Date(s.state.failedAt),
-  }
-  return renderSpecialistThread(reply)
+  };
+  return renderSpecialistThread(reply);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Final report — posted in the anchor thread when the aggregator finishes
-// ────────────────────────────────────────────────────────────────────────────
+// ── Final report (legacy markdown path) ─────────────────────────────
 
 export function renderFinalReport(report: string, clientName: string): RenderedMessage {
   const reply: FinalReportThreadReply = {
     headline: `${clientName} — Final report`,
     sections: [{ body: report }],
-  }
-  return renderFinalReportThread(reply)
+  };
+  return renderFinalReportThread(reply);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Approval messages — non-threaded, posted directly to the channel.
-//
-// The agent-shell's internal ApprovalRequestInput / ApprovalResolvedInput
-// shapes don't match the block builders' shapes 1:1, so we adapt here.
-// `tenantId` is used as the display name fallback — fine for tarino-style
-// slugs, but can be replaced with a tenant-name lookup later if richer
-// display is needed.
-// ────────────────────────────────────────────────────────────────────────────
+// ── Approval messages ───────────────────────────────────────────────
 
 export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMessage {
   const req: ApprovalRequest = {
@@ -153,38 +149,31 @@ export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMess
     actionKind: 'other',
     requestedAt: new Date(),
     approvalId: input.approvalId,
-  }
-  return renderApprovalRequestBlocks(req)
+  };
+  return renderApprovalRequestBlocks(req);
 }
 
 export function renderApprovalResolved(input: ApprovalResolvedInput): RenderedMessage {
-  // The block builder's resolution doesn't have a 'timeout' variant —
-  // map it to 'deferred' since that's what timeouts effectively are
-  // from a decision-tracking perspective.
   const resolution: 'approved' | 'rejected' | 'deferred' =
     input.decision === 'approved' ? 'approved' :
     input.decision === 'rejected' ? 'rejected' :
-    'deferred'
+    'deferred';
 
   const res: ApprovalResolution = {
     tenantName: input.tenantId,
     summary: input.toolName,
     resolution,
-    // resolvedBy is required on the block builder; auto-resolved
-    // (timeout) and missing-resolver cases get a placeholder.
     resolvedBy: input.resolvedBy ?? '_system_',
     resolvedAt: new Date(),
     comment: input.rejectionReason,
-  }
-  return renderApprovalResolvedBlocks(res)
+  };
+  return renderApprovalResolvedBlocks(res);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Budget warning — non-threaded. Inline blocks; small message, rare event.
-// ────────────────────────────────────────────────────────────────────────────
+// ── Budget warning ──────────────────────────────────────────────────
 
 export function renderBudgetWarning(input: BudgetWarningInput): RenderedMessage {
-  const title = `Token budget reached for ${input.clientName}`
+  const title = `Token budget reached for ${input.clientName}`;
   const blocks = [
     header(`⚠️ ${title}`),
     section(
@@ -194,27 +183,22 @@ export function renderBudgetWarning(input: BudgetWarningInput): RenderedMessage 
       `Task \`${input.taskId}\` paused. Increase the per-run cap on the tenant or wait until next reset.`
     ),
     context([`Task \`${input.taskId}\``]),
-  ]
+  ];
   return {
-    text: fallbackText({
-      title,
-      summary: `task ${input.taskId} paused`,
-    }),
+    text: fallbackText({ title, summary: `task ${input.taskId} paused` }),
     blocks,
-  }
+  };
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Helpers preserved for any downstream callers / tests
-// ────────────────────────────────────────────────────────────────────────────
+// ── Helpers preserved for downstream callers / tests ────────────────
 
 export function formatDuration(ms: number): string {
-  if (ms < 0) ms = 0
-  const totalSec = Math.floor(ms / 1000)
-  const h = Math.floor(totalSec / 3600)
-  const m = Math.floor((totalSec % 3600) / 60)
-  const s = totalSec % 60
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }

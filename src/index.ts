@@ -2,11 +2,17 @@ import 'dotenv/config'
 import { startAllTenantBots } from './tenants/slackManager'
 import './queue/worker'
 import { logger } from './logger'
+
+import { bootstrapSchedules } from './scheduler'
+import { startScheduleWorker } from './scheduler/worker'
+
 import http from 'http'
 
 async function main() {
   logger.info('cgs_agent_shell_starting', { env: process.env.NODE_ENV, pid: process.pid })
   await startAllTenantBots()
+  await bootstrapSchedules()
+  startScheduleWorker()
   logger.info('cgs_agent_shell_ready', { mode: 'multi-tenant' })
 }
 

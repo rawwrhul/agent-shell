@@ -1,8 +1,17 @@
 // src/core/slack/blocks/anchor.ts
 //
-// The anchor message: posted at the start of every run, edited in place
-// as the run progresses through phases. Replaces the mrkdwn anchor render
-// from Rollout 1.
+// The anchor message: posted at the start of every run, edited in place as
+// the run progresses through phases.
+//
+// Rollout 3 changes:
+//   - AnchorState gains an optional `finalReport: FinalReport` field. When
+//     phase === 'complete' AND finalReport is set, renderAnchor delegates
+//     to the matching report renderer (ad-hoc / daily / weekly) and returns
+//     that as the rendered anchor message.
+//   - Legacy path preserved: if finalReport is absent but finalSummary is,
+//     the original "white_check_mark + summary string" view still works.
+//   - All other phases (starting / planning / running / synthesising /
+//     failed) render exactly as before.
 
 import type { KnownBlock } from '@slack/web-api';
 import {
@@ -19,7 +28,10 @@ import {
   type ListItem,
   type PhaseStatus,
 } from './shared';
-import type { RenderedMessage } from './types';
+import type { FinalReport, RenderedMessage } from './types';
+import { renderAdHocCheck } from './ad-hoc-check';
+import { renderDailyRun } from './daily-run';
+import { renderWeeklyAudit } from './weekly-audit';
 
 export type RunPhase =
   | 'starting'
@@ -60,12 +72,26 @@ export interface AnchorState {
     requestedAt: Date;
   };
 
-  /** Final outcome on completion. */
+  /**
+   * R3: structured final report. When set AND phase === 'complete', the
+   * anchor delegates to the matching report renderer instead of the
+   * legacy summary path. Coexists with finalSummary for backward compat.
+   */
+  finalReport?: FinalReport;
+
+  /** Legacy final summary (pre-R3). Used when finalReport is absent. */
   finalSummary?: string;
+
   errorMessage?: string;
 }
 
 export function renderAnchor(state: AnchorState): RenderedMessage {
+  // ── R3: Delegate to structured report renderer when complete ──
+  if (state.phase === 'complete' && state.finalReport) {
+    return renderCompleteWithStructuredReport(state, state.finalReport);
+  }
+
+  // ── Default path: in-progress / failed / complete-without-report ──
   const headerLine = anchorHeaderLine(state);
   const subline = anchorSubline(state);
 
@@ -90,7 +116,7 @@ export function renderAnchor(state: AnchorState): RenderedMessage {
         `:hourglass_flowing_sand: *Awaiting your approval*\n${state.approvalPending.summary}\n_Requested ${formatTime(state.approvalPending.requestedAt)}_`
       ),
 
-    // Final outcome
+    // Final outcome (legacy / fallback path)
     state.phase === 'complete' && state.finalSummary && divider(),
     state.phase === 'complete' &&
       state.finalSummary &&
@@ -111,7 +137,36 @@ export function renderAnchor(state: AnchorState): RenderedMessage {
   };
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── R3: Structured report delegation ────────────────────────────────
+
+function renderCompleteWithStructuredReport(
+  state: AnchorState,
+  report: FinalReport,
+): RenderedMessage {
+  const elapsedMs = state.updatedAt.getTime() - state.startedAt.getTime();
+  const elapsedLabel = msToHuman(elapsedMs);
+  const specialistCount = state.specialists.length;
+
+  switch (report.kind) {
+    case 'ad_hoc':
+      return renderAdHocCheck(report, { elapsedLabel, specialistCount });
+    case 'daily':
+      return renderDailyRun(report);
+    case 'weekly':
+      return renderWeeklyAudit(report);
+  }
+}
+
+function msToHuman(ms: number): string {
+  if (ms < 0) ms = 0;
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return rem === 0 ? `${min}m` : `${min}m ${rem}s`;
+}
+
+// ── Existing helpers (unchanged) ────────────────────────────────────
 
 function anchorHeaderLine(state: AnchorState): string {
   const phaseLabel = phaseDisplayName(state.phase);
