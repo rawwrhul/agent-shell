@@ -21,6 +21,7 @@ import {
 } from './state-store';
 import { updateApprovalRowStatus } from './sheets';
 import { getTenant } from '../tenants/registry';
+import { onApprovalApproved } from './execution-hook';
 
 let _pool: Pool | null = null;
 function pool(): Pool {
@@ -63,11 +64,19 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
     /* swallowed — mirror failures already logged inside */
   });
 
-  await enqueueApprovalExecution(approval).catch((err) => {
-    logger.error('approval_execute_enqueue_failed', {
-      approvalId: ctx.approvalId, err: String(err),
+  try {
+    const r = await onApprovalApproved(ctx.approvalId);
+    if (r.enqueued) {
+      logger.info('execution_enqueued_from_button', { approvalId: ctx.approvalId });
+    } else {
+      logger.info('execution_not_enqueued', { approvalId: ctx.approvalId, reason: r.reason });
+    }
+  } catch (err) {
+    logger.error('execution_enqueue_failed', {
+      approvalId: ctx.approvalId,
+      err: String(err).slice(0, 200),
     });
-  });
+  }
 }
 
 export async function handleReject(ctx: ActionContext, rejectionReason?: string): Promise<void> {

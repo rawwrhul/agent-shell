@@ -54,6 +54,11 @@ import {
   SEO_TOOLS, executeSeoTool, isSeoToolName,
 } from '../skills/seo'
 import { cachedSystem, cachedTools } from '../lib/prompt-cache'
+import {
+  buildIntegrationToolsForTenant,
+  isIntegrationToolName,
+  executeIntegrationTool,
+} from '../integrations'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -144,11 +149,15 @@ async function callAnthropicWithRetry(
 
 // ── Tool builders ─────────────────────────────────────────────────────────
 
-function buildToolsForSpecialist(opts: { tenantSkills: string[] }): Anthropic.Tool[] {
+function buildToolsForSpecialist(opts: { tenantSkills: string[]; tenant: TenantConfig }): Anthropic.Tool[] {
   const tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...MEMORY_TOOLS]
   if (opts.tenantSkills.includes('seo')) {
     tools.push(...SEO_TOOLS)
   }
+  // Integration tools (Framer, GSC, GA4, DataForSEO) are added based on
+  // tenant.integrations array — independent of skills. A tenant can have
+  // skills=['seo'] but no integrations connected yet (proposal-only mode).
+  tools.push(...buildIntegrationToolsForTenant(opts.tenant))
   return tools
 }
 
@@ -202,7 +211,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   // Specialists get standard agent tools + memory tools + SEO tools (if
   // the tenant has the 'seo' skill). SEO and memory tools are DB-only
   // side effects and bypass the HITL hook.
-  const tools = buildToolsForSpecialist({ tenantSkills: tenant.skills })
+  const tools = buildToolsForSpecialist({ tenantSkills: tenant.skills, tenant })
   const memoryToolCtx = { tenantId: task.tenantId, runId: task.id }
   const seoToolCtx = { tenantId: task.tenantId, runId: task.id, taskId: task.id }
 
@@ -269,6 +278,20 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
               tb.name,
               tb.input as Record<string, unknown>,
               seoToolCtx,
+            )
+            results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
+            continue
+          }
+
+          // Integration tools (Framer, GSC, GA4, DataForSEO) — external APIs.
+          // All integration tools here are READ-only or otherwise safe; writes
+          // are routed through propose_action → execution worker, not direct
+          // tool calls. No HITL hook needed here.
+          if (isIntegrationToolName(tb.name)) {
+            const output = await executeIntegrationTool(
+              tb.name,
+              tb.input as Record<string, unknown>,
+              tenant,
             )
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue

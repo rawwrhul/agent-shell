@@ -107,6 +107,10 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     tokenBudgetPerRun:  row.token_budget_per_run,
     skills:             Array.isArray(row.skills) ? row.skills : JSON.parse(row.skills as unknown as string),
     billingTag:         row.billing_tag,
+    integrations:       row.integrations ?? [],
+    gsc_site_url:       row.gsc_site_url ?? undefined,
+    ga4_property_id:    row.ga4_property_id ?? undefined,
+    framer_project_url: row.framer_project_url ?? undefined,
   }
 }
 

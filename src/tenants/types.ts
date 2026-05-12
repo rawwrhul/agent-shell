@@ -52,6 +52,20 @@ export interface TenantConfig {
 
   /** Per-tenant cron timezone override. Default Australia/Sydney. */
   cronTimezone?:      string
+
+  /** Integrations connected for this tenant. Subset of:
+   *  'framer' | 'gsc' | 'ga4' | 'dataforseo' */
+  integrations: string[]
+
+  /** Google Search Console site URL, e.g. 'https://tarino.au/' or
+   *  'sc-domain:tarino.au'. Read by the GSC client at request time. */
+  gsc_site_url?: string
+
+  /** Google Analytics 4 property ID — the numeric one, e.g. '123456789'. */
+  ga4_property_id?: string
+
+  /** Framer project URL, e.g. 'https://framer.com/projects/Sites--aabbccddeeff'. */
+  framer_project_url?: string
 }
 
 export interface TenantRow {
@@ -77,4 +91,8 @@ export interface TenantRow {
   secret_google_private_key:    string
   created_at:                   Date
   updated_at:                   Date
+  integrations: string[]
+  gsc_site_url: string | null
+  ga4_property_id: string | null
+  framer_project_url: string | null
 }
