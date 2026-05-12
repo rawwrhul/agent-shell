@@ -44,7 +44,10 @@ function pool(): Pool {
 }
 
 export function startExecutionWorker(): Worker {
-  const connection = createRedisConnection({ label: 'execution-worker' })
+  const connection = createRedisConnection({
+    url:   process.env.REDIS_URL,
+    label: 'execution-worker',
+  })
 
   const worker = new Worker<ExecutionJobPayload>(
     QUEUE_NAME,

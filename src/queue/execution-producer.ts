@@ -18,7 +18,10 @@ let _queue: Queue | null = null
 function getQueue(): Queue {
   if (_queue) return _queue
   _queue = new Queue<ExecutionJobPayload>(QUEUE_NAME, {
-    connection: createRedisConnection({ label: 'execution-producer' }),
+    connection: createRedisConnection({
+      url:   process.env.REDIS_URL,
+      label: 'execution-producer',
+    }),
     defaultJobOptions: {
       attempts:    3,
       backoff:     { type: 'exponential', delay: 5_000 },
