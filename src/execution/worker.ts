@@ -44,16 +44,17 @@ function pool(): Pool {
 }
 
 export function startExecutionWorker(): Worker {
-  const connection = createRedisConnection({
-    url:   process.env.REDIS_URL,
-    label: 'execution-worker',
-  })
-
   const worker = new Worker<ExecutionJobPayload>(
     QUEUE_NAME,
     async (job: Job<ExecutionJobPayload>) => processJob(job),
     {
-      connection,
+      connection: {
+        url:                  process.env.REDIS_URL,
+        maxRetriesPerRequest: null,
+        enableReadyCheck:     false,
+        tls:                  {},
+        family:               0,
+      },
       concurrency:    Number(process.env.EXECUTION_WORKER_CONCURRENCY ?? '3'),
       stalledInterval: 30_000,
       maxStalledCount: 2,
