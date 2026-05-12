@@ -6,14 +6,14 @@
 //   4. Each spawn creates a SubTask record and enqueues a BullMQ job
 //   5. Exits cleanly — the parallel subagents do the actual work
 //
-// As of Rollout 2, the orchestrator's system prompt is prefixed with the
-// tenant's memory context (wins, losses, in-progress threads, learnings,
-// constraints, preferences, facts) so planning decisions compound across
-// runs instead of starting from zero each time.
-//
-// R3.1: voice shift — the orchestrator's plan_summary (which gets posted
-// as the anchor's plan text) is now framed as "what I'm planning to do"
-// in first person, not transactional "spawned X specialists" language.
+// CHANGES from 12 May:
+//   - spawn_subagent now accepts `task_intent` ('investigate' |
+//     'propose_changes'). This controls whether the specialist's
+//     toolbelt includes write-side SEO tools (propose_action,
+//     log_seo_action, snapshot_metrics, upsert_cluster) or read-only
+//     ones only. Default is 'propose_changes' (back-compat).
+//   - Added a prompt section teaching the orchestrator when each
+//     intent applies.
 
 import Anthropic      from '@anthropic-ai/sdk'
 import { v4 as uuid } from 'uuid'
@@ -21,7 +21,7 @@ import { config }     from '../config'
 import { AgentTask }  from '../types'
 import { TenantConfig } from '../tenants/types'
 import { getSpecialists } from './registry'
-import { createSubTask }  from '../memory/subtasks'
+import { createSubTask, TaskIntent } from '../memory/subtasks'
 import { enqueueSubagentJob } from '../queue/producer'
 import { presenter }      from '../core/slack'
 import { buildTenantSkillsPrompt } from '../skills/loader'
@@ -32,6 +32,8 @@ import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
+const VALID_INTENTS: TaskIntent[] = ['investigate', 'propose_changes']
+
 export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Promise<void> {
   const sessionId = uuid()
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: 'orchestrator', billingTag: tenant.billingTag, userId: task.slackUserId })
@@ -41,8 +43,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
   const specialists = getSpecialists(tenant.agentType)
   const spawnedIds: string[] = []
 
-  // Pull the tenant's memory context. Best-effort — if it fails (DB hiccup,
-  // first run for a fresh tenant) we proceed with an empty memory block.
+  // Pull the tenant's memory context. Best-effort.
   let memoryPrompt = ''
   try {
     const ctx = await getMemoryContext({
@@ -80,8 +81,13 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
           specific_task:   { type: 'string', description: 'The specific, scoped task for this specialist. Be precise — do not just repeat the original prompt.' },
           context:         { type: 'string', description: 'Key context this specialist needs: domain, credentials available, specific URLs, competitor names, etc.' },
           priority:        { type: 'number', description: 'Execution priority 1-10 (1=highest). Use to sequence when some specialists should start before others.' },
+          task_intent: {
+            type: 'string',
+            enum: ['investigate', 'propose_changes'],
+            description: 'investigate = read-only (questions, audits, "what is the state of X"). propose_changes = the specialist can file approval requests for the operator to review (fixes, improvements, "make X better"). When unsure, choose propose_changes.',
+          },
         },
-        required: ['specialist_type', 'specific_task', 'context'],
+        required: ['specialist_type', 'specific_task', 'context', 'task_intent'],
       },
     },
     {
@@ -111,9 +117,6 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
       const response = await anthropic.messages.create({
         model:      tenant.agentModel,
         max_tokens: 4096,
-        // Static parts cached. System changes only if tenant memory differs;
-        // tools are constant. ~5k prefix tokens get cached across the
-        // planning loop's iterations.
         system:     cachedSystem(system),
         tools:      cachedTools(orchestratorTools),
         messages,
@@ -125,23 +128,43 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
         for (const tb of toolBlocks) {
           if (tb.name === 'spawn_subagent') {
-            const input  = tb.input as { specialist_type: string; specific_task: string; context: string; priority?: number }
-            const spec   = specialists.find(s => s.type === input.specialist_type)
+            const input = tb.input as {
+              specialist_type: string
+              specific_task:   string
+              context:         string
+              priority?:       number
+              task_intent?:    string
+            }
+            const spec = specialists.find(s => s.type === input.specialist_type)
 
             if (!spec) {
               results.push({ type: 'tool_result', tool_use_id: tb.id, content: `Unknown specialist type: ${input.specialist_type}` })
               continue
             }
 
+            // Validate task_intent. Default to propose_changes (back-compat
+            // and the safer choice if the orchestrator forgets to set it
+            // for a propose-style task).
+            const rawIntent = input.task_intent
+            let taskIntent: TaskIntent = 'propose_changes'
+            if (rawIntent && VALID_INTENTS.includes(rawIntent as TaskIntent)) {
+              taskIntent = rawIntent as TaskIntent
+            } else if (rawIntent) {
+              logger.warn('orchestrator_invalid_task_intent', {
+                taskId: task.id, specialistType: input.specialist_type, rawIntent,
+              })
+            }
+
             const subTaskId = await createSubTask({
-              parentTaskId:  task.id,
-              tenantId:      task.tenantId,
+              parentTaskId:   task.id,
+              tenantId:       task.tenantId,
               specialistType: input.specialist_type,
               specialistName: spec.name,
-              task:          input.specific_task,
-              context:       input.context,
-              skills:        spec.defaultSkills.filter(s => tenant.skills.includes(s) || tenant.skills.length === 0),
-              priority:      input.priority ?? 5,
+              task:           input.specific_task,
+              context:        input.context,
+              skills:         spec.defaultSkills.filter(s => tenant.skills.includes(s) || tenant.skills.length === 0),
+              priority:       input.priority ?? 5,
+              taskIntent,
             })
 
             await enqueueSubagentJob({
@@ -159,8 +182,11 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
               input.specific_task,
             )
 
-            logger.info('subagent_spawned', { tenantId: task.tenantId, taskId: task.id, specialistType: input.specialist_type, subTaskId })
-            results.push({ type: 'tool_result', tool_use_id: tb.id, content: `Spawned ${spec.name} (subTaskId: ${subTaskId})` })
+            logger.info('subagent_spawned', {
+              tenantId: task.tenantId, taskId: task.id,
+              specialistType: input.specialist_type, subTaskId, taskIntent,
+            })
+            results.push({ type: 'tool_result', tool_use_id: tb.id, content: `Spawned ${spec.name} (subTaskId: ${subTaskId}, intent: ${taskIntent})` })
           }
 
           if (tb.name === 'complete_planning') {
@@ -176,7 +202,6 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
         messages.push({ role: 'assistant', content: response.content })
         messages.push({ role: 'user', content: results })
       } else {
-        // end_turn without complete_planning — still done
         break
       }
     }
@@ -222,9 +247,29 @@ Default to QUICK if the request is short or vague. Operators usually want fast w
 When you spawn a specialist, include the inferred scope IN the task description. Example:
   "Scope: quick check. Look at the homepage page title, summary, and main headline only. Stop after you've checked those three things and have findings to report."
 
+## Choosing task_intent for each specialist
+
+Every spawn_subagent call requires a task_intent. Two options:
+
+- **investigate** — The user is asking a question, exploring state, or asking "is X working", "why is Y happening", "what is the state of Z". The specialist reads with tools and returns findings. It CANNOT file approval requests, log work, snapshot metrics, or update clusters. Use this when the operator wants to UNDERSTAND something before deciding what to do about it.
+
+- **propose_changes** — The user is asking for fixes, improvements, or a full audit with intent to act ("fix X", "improve Y", "audit Z", "what should we do about W"). The specialist can investigate AND file approval requests for the operator to review. This is the default for any audit-style or fix-style request.
+
+Examples:
+- "Is the homepage indexed?" → investigate (just answer the question)
+- "Why is the homepage missing from Google?" → investigate (diagnostic question)
+- "Fix the homepage indexing" → propose_changes (operator wants action)
+- "Quick check on the site" → investigate (just looking)
+- "Full SEO audit" → propose_changes (operator expects action items)
+- "Tell me what's wrong with /products" → investigate (asking for assessment)
+- "Audit /products and propose fixes" → propose_changes (explicit ask)
+
+When unsure: choose propose_changes. The cost of an investigate-mode specialist returning "I noticed X but couldn't file it for you" is small. The cost of a question-mode operator receiving 6 unsolicited approval requests is operator-trust-erosion-large.
+
 ## Rules
 - Spawn ONLY the specialists actually needed for the request. A targeted request may need just one. A full audit needs all.
 - Give each specialist a specific, scoped task that includes the inferred scope — not a copy of the original prompt.
+- Set task_intent based on whether the operator wants exploration (investigate) or action (propose_changes).
 - Include all context the specialist will need: target domain, competitor domains, specific pages, available credentials.
 - Call complete_planning when all spawns are done.
 - Do NOT attempt to do the work yourself. Your only tools are spawn_subagent and complete_planning.
@@ -258,5 +303,5 @@ ${triggerNote ? '\n' + triggerNote : ''}
 Task ID: ${task.id}
 
 Analyse this request and spawn the appropriate specialist subagents.
-Remember: spawn only what is needed, with specific scoped tasks for each.`
+Remember: spawn only what is needed, with specific scoped tasks for each, and the right task_intent.`
 }

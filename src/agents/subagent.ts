@@ -8,22 +8,25 @@
 //   - Checks if it was the last sibling to complete → triggers aggregation
 //
 // Rollouts:
-//   R2: tenant memory context prepended to system prompt + memory tools
-//       (record_memory, query_memory, scratchpad_write, scratchpad_read).
-//   R3.1: SEO tool dispatch (tenants with the 'seo' skill get
-//         log_work / record_opportunity / log_metric / log_cluster_progress
-//         tools that write to seo_work_log / seo_opportunities /
-//         seo_metrics_snapshots / seo_clusters). DB-only side effects, no
-//         HITL hook required. Without these tools the daily/weekly
-//         aggregator can't pull "shipped overnight" / "metrics" / "cluster
-//         progress" from anywhere — narrative-only specialists produce
-//         empty daily/weekly reports.
-//   R3.1: bounded retries on the Anthropic API call (ECONNRESET, 5xx, 429,
-//         timeouts) with exponential backoff. Prevents the runaway loop
-//         observed in prod when intermediate hops killed streaming
-//         connections — every tool call was retrying forever.
-//   R3.1: hard iteration cap separate from config.AGENT_MAX_TURNS, in case
-//         that value is set high. Defaults to min(AGENT_MAX_TURNS, 15).
+//   R2: tenant memory context prepended to system prompt + memory tools.
+//   R3.1: SEO tool dispatch.
+//   R3.1: bounded retries on the Anthropic API call with exponential backoff.
+//   R3.1: hard iteration cap separate from config.AGENT_MAX_TURNS.
+//
+//   Structural hardening (12 May / 13 May):
+//     - Captures baseline DB row counts at the top of runSubagent and
+//       calls reconcileOutput before writing output.md. Reconciliation
+//       prepends a hallucination warning if the model claimed writes
+//       that didn't happen, and appends an authoritative "## Verified
+//       DB writes" section.
+//     - buildToolsForSpecialist now respects task_intent. 'investigate'
+//       strips write-side SEO tools (propose_action, log_seo_action,
+//       log_opportunity, snapshot_metrics, upsert_cluster).
+//     - Investigate-mode safety net inside the tool dispatch loop: even
+//       if a write-side SEO tool somehow leaked through, calls to it
+//       are denied with a structured tool_result.
+//     - buildSubagentSystem now intent-aware and explicit about the
+//       anti-hallucination invariant.
 
 import path from 'path'
 import fs   from 'fs'
@@ -41,7 +44,7 @@ import { startTrace, endTrace, recordUsage } from '../observability/langfuse'
 import { createRunRecord, completeRunRecord } from '../memory/postgres'
 import {
   getSubTask, startSubTask, completeSubTask, failSubTask,
-  allSubtasksComplete, anySubtaskSucceeded,
+  allSubtasksComplete, anySubtaskSucceeded, TaskIntent,
 } from '../memory/subtasks'
 import { enqueueAggregationJob } from '../queue/producer'
 import { presenter }   from '../core/slack'
@@ -59,27 +62,32 @@ import {
   isIntegrationToolName,
   executeIntegrationTool,
 } from '../integrations'
+import {
+  captureBaselineCounts, reconcileOutput, ReconciliationCounts,
+} from './reconciliation'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
 // ── Iteration cap and retry policy ────────────────────────────────────────
-//
-// Hard cap: 15 iterations per executor run, regardless of config setting.
-// If config.AGENT_MAX_TURNS is set lower, that wins. Higher → still capped
-// at 15. Empirically a converging task runs in 3-8 iterations.
 const HARD_ITERATION_CAP = 15
-
-// Anthropic call retry policy. We retry on transient network/server errors;
-// permanent errors (4xx other than 429, malformed request) fail fast.
 const MAX_API_RETRIES = 3
-const RETRY_BASE_DELAY_MS = 1000  // 1s, then 2s, then 4s
-const PER_CALL_TIMEOUT_MS = 90_000  // 90s upper bound per model call
+const RETRY_BASE_DELAY_MS = 1000
+const PER_CALL_TIMEOUT_MS = 90_000
 
 const TRANSIENT_ERROR_CODES = new Set([
   'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND', 'ECONNREFUSED',
 ])
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504])
+
+/** SEO tool names that mutate DB state. Stripped in investigate mode. */
+const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
+  'propose_action',
+  'log_seo_action',
+  'log_opportunity',
+  'snapshot_metrics',
+  'upsert_cluster',
+])
 
 interface AnthropicErrorLike {
   code?: string
@@ -91,13 +99,9 @@ interface AnthropicErrorLike {
 function isTransientError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const e = err as AnthropicErrorLike
-
   const code = e.code ?? e.cause?.code
   if (code && TRANSIENT_ERROR_CODES.has(code)) return true
-
   if (typeof e.status === 'number' && TRANSIENT_HTTP_STATUSES.has(e.status)) return true
-
-  // String-matching fallback for SDK errors that don't expose code
   const msg = (e.message ?? '').toLowerCase()
   if (msg.includes('econnreset') || msg.includes('timeout') || msg.includes('socket hang up')) {
     return true
@@ -109,11 +113,6 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
 
-/**
- * Wrap an Anthropic.messages.create call with bounded retries and a
- * per-attempt timeout. Permanent errors throw immediately. Transient
- * errors retry up to MAX_API_RETRIES times with exponential backoff.
- */
 async function callAnthropicWithRetry(
   params: Anthropic.MessageCreateParamsNonStreaming,
   attempt = 1,
@@ -129,8 +128,7 @@ async function callAnthropicWithRetry(
   } catch (err) {
     if (attempt >= MAX_API_RETRIES || !isTransientError(err)) {
       logger.error('anthropic_call_failed', {
-        attempt,
-        max: MAX_API_RETRIES,
+        attempt, max: MAX_API_RETRIES,
         transient: isTransientError(err),
         err: String(err).slice(0, 400),
       })
@@ -149,14 +147,26 @@ async function callAnthropicWithRetry(
 
 // ── Tool builders ─────────────────────────────────────────────────────────
 
-function buildToolsForSpecialist(opts: { tenantSkills: string[]; tenant: TenantConfig }): Anthropic.Tool[] {
+/**
+ * Build the toolbelt for a specialist. Respects task_intent: if
+ * 'investigate', strips write-side SEO tools so the model literally
+ * cannot file approvals, log work, snapshot metrics, or upsert clusters
+ * even if it tries.
+ */
+function buildToolsForSpecialist(opts: {
+  tenantSkills: string[]
+  tenant: TenantConfig
+  taskIntent: TaskIntent
+}): Anthropic.Tool[] {
   const tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...MEMORY_TOOLS]
   if (opts.tenantSkills.includes('seo')) {
-    tools.push(...SEO_TOOLS)
+    if (opts.taskIntent === 'investigate') {
+      const readOnly = SEO_TOOLS.filter(t => !WRITE_SIDE_SEO_TOOL_NAMES.has(t.name))
+      tools.push(...readOnly)
+    } else {
+      tools.push(...SEO_TOOLS)
+    }
   }
-  // Integration tools (Framer, GSC, GA4, DataForSEO) are added based on
-  // tenant.integrations array — independent of skills. A tenant can have
-  // skills=['seo'] but no integrations connected yet (proposal-only mode).
   tools.push(...buildIntegrationToolsForTenant(opts.tenant))
   return tools
 }
@@ -169,6 +179,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
   const sessionId = uuid()
   const runId     = uuid()
+  const taskIntent: TaskIntent = (subTask.task_intent ?? 'propose_changes') as TaskIntent
 
   // Each subagent gets its own subdirectory inside the parent task directory
   const workDir = path.resolve(config.PROGRESS_DIR, task.id, 'subagents', subTask.specialist_type)
@@ -179,6 +190,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     taskId:         task.id,
     subTaskId,
     specialistType: subTask.specialist_type,
+    taskIntent,
   })
 
   await startSubTask(subTaskId)
@@ -187,11 +199,15 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
   await presenter.recordSpecialistStart(task.id, subTask.specialist_type)
 
+  // Capture baseline DB row counts BEFORE the model loop. Reconciliation
+  // uses (final - baseline) to derive what THIS run actually wrote.
+  const reconciliationBaseline: ReconciliationCounts =
+    await captureBaselineCounts(task.id, task.tenantId)
+
   const hookCtx = { taskId: task.id, sessionId, agentType: subTask.specialist_type, tenant, channelId: task.slackChannelId }
   const learnings = await retrieveRelevant({ tenantId: task.tenantId, agentType: subTask.specialist_type, query: subTask.task, topK: 3 })
 
-  // Pull tenant memory (L2). Best-effort — first runs and DB hiccups
-  // both yield an empty block.
+  // Pull tenant memory (L2). Best-effort.
   let memoryPrompt = ''
   try {
     const ctx = await getMemoryContext({
@@ -204,21 +220,21 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     logger.warn('subagent_memory_load_failed', { subTaskId, err: String(err) })
   }
 
-  const baseSystem = buildSubagentSystem(subTask, tenant, learnings)
+  const baseSystem = buildSubagentSystem(subTask, tenant, learnings, taskIntent)
   const system     = memoryPrompt ? `${memoryPrompt}\n\n${baseSystem}` : baseSystem
   const userMsg    = buildSubagentPrompt(subTask, workDir)
 
-  // Specialists get standard agent tools + memory tools + SEO tools (if
-  // the tenant has the 'seo' skill). SEO and memory tools are DB-only
-  // side effects and bypass the HITL hook.
-  const tools = buildToolsForSpecialist({ tenantSkills: tenant.skills, tenant })
+  const tools = buildToolsForSpecialist({
+    tenantSkills: tenant.skills,
+    tenant,
+    taskIntent,
+  })
   const memoryToolCtx = { tenantId: task.tenantId, runId: task.id }
   const seoToolCtx = { tenantId: task.tenantId, runId: task.id, taskId: task.id }
 
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMsg }]
   let tokenCount = 0, toolCount = 0, finalOutput = ''
 
-  // Hard iteration cap — min(config setting, HARD_ITERATION_CAP)
   const iterationCap = Math.min(config.AGENT_MAX_TURNS ?? HARD_ITERATION_CAP, HARD_ITERATION_CAP)
 
   try {
@@ -229,12 +245,6 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
       const response = await callAnthropicWithRetry({
         model:      tenant.agentModel,
         max_tokens: 8096,
-        // Prompt caching: cache the system prompt (static for the run) and
-        // all tool definitions (static for the run). Messages stay uncached
-        // since they grow each turn. After iteration 1, the ~10k tokens of
-        // system+tools cost ~10% of regular rate AND don't count against
-        // ITPM. On a 15-iteration run this is ~6x cost reduction on the
-        // prefix and substantially eases rate-limit pressure.
         system:     cachedSystem(system),
         tools:      cachedTools(tools),
         messages,
@@ -260,6 +270,22 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
             taskId: task.id, subTaskId, specialistType: subTask.specialist_type,
             toolName: tb.name, turn: turns,
           })
+
+          // Investigate-mode safety net. The tool builder already strips
+          // write-side SEO tools when taskIntent === 'investigate', so
+          // this branch should only fire if there's a bug somewhere
+          // upstream. Defence in depth.
+          if (taskIntent === 'investigate' && WRITE_SIDE_SEO_TOOL_NAMES.has(tb.name)) {
+            logger.warn('subagent_blocked_write_tool_in_investigate_mode', {
+              subTaskId, taskId: task.id, toolName: tb.name,
+            })
+            results.push({
+              type: 'tool_result',
+              tool_use_id: tb.id,
+              content: `Tool denied: this task is in 'investigate' mode and cannot perform writes. Return your findings as prose in output.md; do not attempt to file approvals or log work. The operator will decide next steps after reading your findings.`,
+            })
+            continue
+          }
 
           // Memory tools (R2) — DB-only, no hook
           if (isMemoryToolName(tb.name)) {
@@ -316,10 +342,6 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     }
 
     if (turns >= iterationCap && !finalOutput) {
-      // Cap hit without natural completion. Force a final summarisation call:
-      // no tools, ask the model to write 3-5 actionable findings based on
-      // what it's discovered so far. Better than dumping the last assistant
-      // message — that's usually full of tool_use blocks with little text.
       logger.warn('subagent_iteration_cap_hit', {
         taskId: task.id, subTaskId, specialistType: subTask.specialist_type,
         cap: iterationCap, toolCount, tokenCount,
@@ -344,9 +366,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         const summaryResponse = await callAnthropicWithRetry({
           model:      tenant.agentModel,
           max_tokens: 2048,
-          // Same system prompt as the main loop — guaranteed cache hit.
           system:     cachedSystem(system),
-          // Deliberately no tools — force a text response.
           messages: summaryMessages,
         })
 
@@ -358,7 +378,6 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
           .join('')
 
         if (!finalOutput) {
-          // Even the summary call returned nothing. Fall back gracefully.
           finalOutput = `Specialist hit its work budget before completing the check. The findings below are partial.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
         }
 
@@ -366,8 +385,6 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
           taskId: task.id, subTaskId, summaryLen: finalOutput.length,
         })
       } catch (err) {
-        // Summary call failed (API down, timeout, etc). Fall back to last
-        // assistant text or a generic message.
         logger.error('subagent_cap_summary_failed', {
           taskId: task.id, subTaskId, err: String(err).slice(0, 200),
         })
@@ -383,6 +400,24 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         }
       }
     }
+
+    // ── Reconciliation ────────────────────────────────────────────────────
+    //
+    // Before we write output.md or hand off to the aggregator, compare
+    // the agent's claims against the database. If it claimed writes
+    // that never happened, prepend a hallucination warning. Always
+    // append a "## Verified DB writes" section listing real rows so
+    // the aggregator can use that as authoritative ground truth.
+    const reconciled = await reconcileOutput({
+      finalOutput,
+      parentTaskId:   task.id,
+      tenantId:       task.tenantId,
+      subTaskId,
+      specialistType: subTask.specialist_type,
+      baseline:       reconciliationBaseline,
+    })
+
+    finalOutput = reconciled.reconciledOutput
 
     // Save output.md to disk for the aggregator
     const outputPath = path.resolve(workDir, 'output.md')
@@ -406,6 +441,9 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
       specialistType: subTask.specialist_type,
       tokenCount,
       turns,
+      taskIntent,
+      reconciliationMismatch: reconciled.mismatch,
+      verifiedWrites: reconciled.delta,
     })
 
     const allDone  = await allSubtasksComplete(task.id)
@@ -430,7 +468,8 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 function buildSubagentSystem(
   subTask: Awaited<ReturnType<typeof getSubTask>> & {},
   tenant: TenantConfig,
-  learnings: Array<{ content: string }>
+  learnings: Array<{ content: string }>,
+  taskIntent: TaskIntent,
 ): string {
   const skillsPrompt = buildTenantSkillsPrompt(subTask.skills)
   const learningsSection = learnings.length
@@ -438,12 +477,65 @@ function buildSubagentSystem(
     : ''
 
   const hasSeoSkill = (subTask.skills ?? []).includes('seo') || tenant.skills.includes('seo')
-  const seoLoggingHint = hasSeoSkill
-    ? `\nYou have SEO logging tools. When you ship work, find an opportunity, or measure a metric, write it to the database so the aggregator can build daily/weekly reports:
-- log_work: record completed actions (anything shipped, deployed, published) → seo_work_log
-- record_opportunity: surface a finding worth doing later → seo_opportunities
-- log_metric: snapshot a metric (rankings, indexed pages, CWV) → seo_metrics_snapshots
-- log_cluster_progress: update topical cluster state → seo_clusters
+
+  // Intent-aware tool guidance. Investigate-mode specialists are told
+  // explicitly that the write-side SEO tools have been stripped, and that
+  // their job is to return findings as prose. Propose-changes-mode
+  // specialists get the integration-tools-first + propose_action-as-only-
+  // write-path guidance (the prompt patch authored 12 May).
+  const intentSection = taskIntent === 'investigate'
+    ? `# Task mode: INVESTIGATE (read-only)
+
+This task is in INVESTIGATE mode. The operator wants to UNDERSTAND something — they have not asked for changes. Your write-side SEO tools have been stripped from your toolbelt. You cannot:
+  - File approval requests (propose_action is unavailable)
+  - Log work to seo_work_log
+  - Record opportunities to seo_opportunities
+  - Snapshot metrics
+  - Update cluster state
+
+You CAN:
+  - Use integration tools (analyze_page, framer_*, gsc_*, ga4_*, dataforseo_*) to GATHER information
+  - Use query_* tools to read existing opportunities, clusters, recent actions
+  - Use memory tools (record_memory, query_memory, scratchpad_*)
+  - Use standard tools (read_file, write_file in your workdir, list_directory, run_command, web_search, web_fetch)
+
+Your output is FINDINGS, not actions. If you notice something the operator might want to act on, surface it as a finding ("The homepage title is over 60 characters and may be truncating in search results") — do NOT try to file approvals. The operator will decide what to do.
+`
+    : `# Task mode: PROPOSE CHANGES (can file approvals)
+
+This task is in PROPOSE_CHANGES mode. The operator has asked for action. You have your full toolbelt including write-side SEO tools.
+
+## Integration tools FIRST, propose_action as the ONLY write path
+
+When you need to LOOK AT external systems (Framer, Google Search Console, GA4, DataForSEO, the live website), use the integration tools FIRST. Do not propose changes to a page you haven't read; do not claim something about rankings you haven't checked.
+
+WRONG (don't do this):
+  - Call propose_action to "fix the homepage title" without calling framer_get_page or analyze_page first
+  - Claim "the homepage is hidden from Google" without calling gsc_inspect_url or web_fetch
+  - Recommend a schema fix without calling analyze_page to see what schema currently exists
+
+RIGHT (do this):
+  - analyze_page(https://${tenant.clientName}.au/) → see actual title, meta, schema, alt coverage
+  - Then propose_action(toolName=..., toolInput=..., proposedAction="Trim homepage title from 87 to 52 chars", whyPriority="Currently truncating in search results")
+
+## propose_action is the ONLY way to write a change for the operator
+
+If you want the operator to do something (publish, edit, fix, change a setting on a tenant system), you call propose_action. That writes a row to approval_requests. The operator sees it in Slack and either approves (the executor worker then applies the change via the appropriate integration tool) or rejects.
+
+You do NOT:
+  - Apply changes directly via integration tools (framer_update_*, gsc_submit_*, etc.) — those are reserved for the executor worker, post-approval
+  - Use log_seo_action to record "shipped" work the operator hasn't approved
+  - Use snapshot_metrics or upsert_cluster as a substitute for propose_action
+
+If the change is small and reversible (e.g. a memory/note for yourself), the memory tools and scratchpad are fine. Anything that touches the tenant's actual website or external accounts goes through propose_action.
+`
+
+  const seoLoggingHint = hasSeoSkill && taskIntent === 'propose_changes'
+    ? `\nYou have SEO logging tools. When you ship work (post-approval, via the executor), find an opportunity, or measure a metric, write it to the database so the aggregator can build daily/weekly reports:
+- log_seo_action: record completed actions (anything shipped, deployed, published) → seo_work_log
+- log_opportunity: surface a finding worth doing later → seo_opportunities
+- snapshot_metrics: snapshot a metric (rankings, indexed pages, CWV) → seo_metrics_snapshots
+- upsert_cluster: update topical cluster state → seo_clusters
 Use these aggressively. Anything not written to the DB doesn't appear in daily/weekly reports.\n`
     : ''
 
@@ -484,6 +576,8 @@ Never use these terms as-is. Replace them — or define them inline on first use
 
 If you find yourself reaching for a term not on this list and it's industry-specific, define it the same way.
 
+${intentSection}
+
 # Match depth to scope
 
 Read the request shape and infer scope BEFORE you start working.
@@ -520,6 +614,18 @@ After every tool call, ask yourself: "Do I have enough to give the operator 3-5 
 # Verifying findings
 
 Don't report assumptions as facts. If you can't verify something with a tool call, mark it explicitly: "Looks like X but I didn't have time to confirm."
+
+# Anti-hallucination invariant (HARD RULE)
+
+Do NOT claim you have done anything you have not actually done as a tool call. Specifically:
+
+- Do NOT write "I've proposed X" or "I've filed an approval" or "the change has been queued" unless you literally emitted a propose_action tool_use block in this same conversation.
+- Do NOT write "I've logged X" or "I've shipped X" or "I've recorded X" unless you literally emitted the corresponding tool_use block.
+- Do NOT write "the change has been proposed and is sitting in preview" unless propose_action returned a successful tool_result for that specific change.
+
+The system runs a reconciliation check at the end of your run. It compares what you CLAIMED in output.md against what actually wrote to the database. If you claim a write that didn't happen, the operator will see a HALLUCINATION DETECTED warning prepended to your report, and your unverified claims will be excluded from the final output.
+
+If you want the operator to do something but you haven't yet called propose_action, write it as a finding ("Recommend hiding /home-2 from Google"), not as an action ("I've proposed hiding /home-2"). The former is true. The latter, without a corresponding tool call, is a lie.
 
 # Memory tools
 

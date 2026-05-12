@@ -1,9 +1,17 @@
 // src/memory/subtasks.ts
 // Database operations for SubTask records.
 // SubTasks are the parallel specialist jobs spawned by the orchestrator.
+//
+// CHANGES from 12 May:
+//   - Added `task_intent` field. The orchestrator decides at spawn time
+//     whether a specialist needs write capability (propose_changes) or
+//     should be read-only (investigate). Tool filtering in subagent.ts
+//     respects this.
 
 import { pool } from './postgres'
 import { logger } from '../logger'
+
+export type TaskIntent = 'investigate' | 'propose_changes' | 'execute_approved'
 
 export interface SubTask {
   id:              string
@@ -15,6 +23,7 @@ export interface SubTask {
   context:         string
   skills:          string[]
   priority:        number
+  task_intent:     TaskIntent
   status:          'pending' | 'running' | 'completed' | 'failed'
   output?:         string
   summary?:        string
@@ -34,20 +43,27 @@ export async function createSubTask(params: {
   context:        string
   skills:         string[]
   priority:       number
+  /** Defaults to 'propose_changes' for back-compat with callers that
+   *  haven't been updated yet. Orchestrator should pass explicitly. */
+  taskIntent?:    TaskIntent
 }): Promise<string> {
   const { v4: uuid } = await import('uuid')
   const id = uuid()
+  const intent: TaskIntent = params.taskIntent ?? 'propose_changes'
 
   await pool.query(
     `INSERT INTO subtasks
        (id, parent_task_id, tenant_id, specialist_type, specialist_name,
-        task, context, skills, priority, status, token_count, tool_call_count, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',0,0,NOW())`,
+        task, context, skills, priority, task_intent, status,
+        token_count, tool_call_count, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',0,0,NOW())`,
     [id, params.parentTaskId, params.tenantId, params.specialistType, params.specialistName,
-     params.task, params.context, JSON.stringify(params.skills), params.priority]
+     params.task, params.context, JSON.stringify(params.skills), params.priority, intent]
   )
 
-  logger.debug('subtask_created', { id, parentTaskId: params.parentTaskId, type: params.specialistType })
+  logger.debug('subtask_created', {
+    id, parentTaskId: params.parentTaskId, type: params.specialistType, intent,
+  })
   return id
 }
 
