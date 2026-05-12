@@ -38,6 +38,10 @@ import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
 import type { FinalReport } from '../core/slack/blocks/types'
 import { cachedSystem } from '../lib/prompt-cache'
+import {
+  loadDailyDifferential, loadWeeklyDifferential,
+  formatDailyDifferentialForPrompt, formatWeeklyDifferentialForPrompt,
+} from './cron-context'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -82,9 +86,29 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     // "synthesising" while the model is working.
     await presenter.setPhase(task.id, 'synthesising')
 
+    // For cron triggers, load a differential context block (today vs
+    // yesterday for daily; this week vs prior week for weekly) and
+    // inject it into the user prompt. Lets the aggregator frame the
+    // report as a delta rather than restating prior work, and lets it
+    // emit honest "no material change" reports without padding.
+    let differentialBlock = ''
+    if (trigger === 'cron-daily') {
+      const diff = await loadDailyDifferential(task.tenantId)
+      differentialBlock = formatDailyDifferentialForPrompt(diff)
+      logger.info('aggregator_daily_differential_loaded', {
+        taskId: task.id, materialActivity: diff.materialActivityToday, firstRun: diff.firstRun,
+      })
+    } else if (trigger === 'cron-weekly') {
+      const diff = await loadWeeklyDifferential(task.tenantId)
+      differentialBlock = formatWeeklyDifferentialForPrompt(diff)
+      logger.info('aggregator_weekly_differential_loaded', {
+        taskId: task.id, materialActivity: diff.materialActivityThisWeek, firstRun: diff.firstRun,
+      })
+    }
+
     // Single Claude call to synthesise — system prompt picked by trigger.
     const systemPrompt = getAggregatorSystemPromptFor(trigger, tenant)
-    const userPrompt = buildAggregatorUserPrompt(task, outputs, trigger)
+    const userPrompt = buildAggregatorUserPrompt(task, outputs, trigger, differentialBlock)
 
     const response = await anthropic.messages.create({
       model:      tenant.agentModel,
@@ -462,7 +486,23 @@ Output ONLY valid JSON matching this exact schema. No prose before or after. No 
 - Pull "queuedForToday" from seo_opportunities with priority=P0/P1 not yet shipped.
 - Pull "awaitingApproval" from approval_requests where status='pending' and (defer_until IS NULL OR defer_until < now()).
 - Empty arrays are FINE if nothing fits — don't fabricate to fill space.
-- TL;DR doesn't repeat the lists — it summarises and contextualises.`
+- TL;DR doesn't repeat the lists — it summarises and contextualises.
+
+# Authoritative ground truth
+
+Each specialist's output may end with a "## Verified DB writes" section. That section lists what actually wrote to the database during the specialist's run. It is AUTHORITATIVE. If a specialist's prose claims a write (e.g. "I've proposed hiding /home-2") but no matching row appears in its Verified DB writes section, DO NOT include that claim in shippedActions, queuedForToday, or awaitingApproval. The write didn't happen.
+
+If a specialist's output starts with "⚠️ HALLUCINATION DETECTED", exclude every write claim that isn't backed by a Verified DB writes row. The operator should not see fabricated actions.
+
+# Handling quiet days
+
+If a "## Prior-day comparison" block was included in the user prompt and it says "Today had NO material activity":
+- Say so plainly in ONE TL;DR bullet ("Quiet day — nothing shipped, no new approvals queued").
+- Do NOT pad the report by restating past work, listing hypothetical opportunities, or inventing things to do.
+- shippedActions, newOpportunities, queuedForToday, awaitingApproval all stay as empty arrays unless backed by Verified DB writes from this run.
+- The operator trusts honest "no change" reports more than padded ones.
+
+If today had material activity but it's modest, frame it honestly — don't inflate.`
 }
 
 function buildWeeklySystem(tenant: TenantConfig): string {
@@ -540,7 +580,22 @@ Output ONLY valid JSON matching this exact schema. No prose before or after. No 
 - stateOfPlay: pull from seo_metrics_snapshots WoW deltas, but RELABEL technical metrics for the operator.
 - clusterProgress: pull from seo_clusters.
 - topPriorities + tldr: derive from week's activity log and current opportunity backlog.
-- Empty arrays are FINE — don't fabricate.`
+- Empty arrays are FINE — don't fabricate.
+
+# Authoritative ground truth
+
+Each specialist's output may end with a "## Verified DB writes" section. That section lists what actually wrote during the specialist's run and is AUTHORITATIVE. If a specialist's prose claims a write that isn't in its Verified DB writes section, exclude that claim from your weekly synthesis. If a "⚠️ HALLUCINATION DETECTED" warning appears, the unverified claims are not real work and should not appear in topPriorities or anywhere else.
+
+The "## Prior-week comparison" block in the user prompt is also authoritative — those WoW counts come directly from the database, not from any specialist's narrative.
+
+# Handling quiet weeks
+
+If the Prior-week comparison block says "This week had NO material activity":
+- Say so plainly in ONE TL;DR bullet ("Quiet week — no new work shipped, no approvals filed").
+- Use the stateOfPlay block to show metrics held steady (or shifted) over the week. That's the genuine substance of a quiet week.
+- Do NOT invent topPriorities to fill space. Empty topPriorities is fine. You can suggest ONE strategic priority for the operator to consider next week if you have a clear basis (e.g. a stale cluster, a slipping metric), but only ONE, and only if backed by data in the prior-week comparison or specialist outputs.
+- riskFlags should reflect real risks — a flat metric isn't a risk, a SLIPPING metric is.
+- The operator trusts honest "this week was quiet" reports more than padded ones.`
 }
 
 // ── User prompt builder ───────────────────────────────────────────────────
@@ -549,6 +604,7 @@ function buildAggregatorUserPrompt(
   task: AgentTask,
   outputs: Array<{ specialistType: string; specialistName: string; summary: string; fullOutput: string }>,
   trigger: TaskTrigger,
+  differentialBlock = '',
 ): string {
   const sections = outputs.map(o =>
     `## ${o.specialistName} (${o.specialistType}) findings\n\n${o.fullOutput}`
@@ -562,11 +618,15 @@ function buildAggregatorUserPrompt(
     }
   })()
 
+  const diffSection = differentialBlock ? `\n${differentialBlock}\n\n---\n` : ''
+
   return `${triggerContext}
 
 Original task: ${task.prompt}
-
+${diffSection}
 The following specialist agents have completed their work. Synthesise their findings into the structured JSON shape defined in your system prompt.
+
+Pay special attention to any "## Verified DB writes" section at the bottom of each specialist's output. That section is authoritative — it lists what actually wrote to the database during the specialist's run. If a specialist's prose claims a write that isn't in its Verified DB writes section, treat that claim as NOT done. If a "⚠️ HALLUCINATION DETECTED" warning appears at the top of a specialist's output, exclude the unverified claims from your synthesis.
 
 ${sections}
 
