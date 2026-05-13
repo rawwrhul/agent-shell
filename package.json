@@ -17,7 +17,8 @@
     "tenant:list": "tsx src/cli/listTenants.ts",
     "typecheck": "tsc --noEmit",
     "smoke:blocks": "tsx scripts/smoke-blocks-render.ts",
-    "smoke:memory": "tsx scripts/smoke-memory-context.ts"
+    "smoke:memory": "tsx scripts/smoke-memory-context.ts",
+    "test":         "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
@@ -41,6 +42,7 @@
     "@types/pg": "^8.11.6",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.15.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.1"
   }
 }

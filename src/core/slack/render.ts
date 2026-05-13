@@ -144,7 +144,7 @@ export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMess
   const req: ApprovalRequest = {
     tenantName: input.tenantId,
     runId: input.taskId,
-    summary: `${input.toolName} requested (${input.riskLevel} risk)`,
+    summary: `\`${input.toolName}\` requested (${input.riskLevel} risk)`,
     detail: input.riskReason,
     actionKind: 'other',
     requestedAt: new Date(),
