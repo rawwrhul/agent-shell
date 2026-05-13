@@ -37,7 +37,7 @@ function getQueue(): Queue {
 
 export async function enqueueApprovalExecutionJob(payload: ExecutionJobPayload): Promise<void> {
   await getQueue().add('execute-approval', payload, {
-    jobId: `${payload.approvalId}:${payload.toolName}`, // dedup on approval+tool
+    jobId: `${payload.approvalId}__${payload.toolName}`, // dedup on approval+tool
   })
   logger.info('execution_job_enqueued', {
     tenantId:   payload.tenantId,
