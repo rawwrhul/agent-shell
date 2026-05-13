@@ -124,12 +124,24 @@ describe('propose_action', () => {
     expect(vi.mocked(presenter.requestApproval)).not.toHaveBeenCalled()
   })
 
-  it('includes proposedAction and whyPriority in riskReason', async () => {
+  it('puts proposedAction in summary and whyPriority in riskReason', async () => {
     await executeSeoTool('propose_action', baseInput, ctxWithChannel)
 
     const call = vi.mocked(presenter.requestApproval).mock.calls[0][0]
-    expect(call.riskReason).toContain('Trim homepage title to 52 chars')
-    expect(call.riskReason).toContain('Gets cut off in Google search results')
+    expect(call.summary).toBe('Trim homepage title to 52 chars')
+    expect(call.riskReason).toBe('Gets cut off in Google search results')
+  })
+
+  it('passes tenant clientName as tenantName for friendly card headline', async () => {
+    await executeSeoTool('propose_action', baseInput, ctxWithChannel)
+    const call = vi.mocked(presenter.requestApproval).mock.calls[0][0]
+    expect(call.tenantName).toBe('Test Co')
+  })
+
+  it('falls back to "Priority X." in riskReason when whyPriority is missing', async () => {
+    await executeSeoTool('propose_action', { ...baseInput, whyPriority: undefined }, ctxWithChannel)
+    const call = vi.mocked(presenter.requestApproval).mock.calls[0][0]
+    expect(call.riskReason).toBe('Priority P1.')
   })
 
   it('is best-effort: presenter failure does not propagate', async () => {
@@ -177,5 +189,53 @@ describe('propose_action', () => {
     expect(presenterCall.previewUrl).toBeUndefined()
     const approvalCall = vi.mocked(createApproval).mock.calls[0][1]
     expect(approvalCall.previewUrl).toBeUndefined()
+  })
+
+  // ── Task 0.5.1: cron-fired runs batch approvals in the final report ──
+
+  it('SUPPRESSES the individual Slack card when triggerSource is cron-daily', async () => {
+    const cronCtx: SeoToolContext = {
+      tenantId:      'test-tenant',
+      runId:         'run-1',
+      taskId:        'task-1',
+      channelId:     'C_CHANNEL',
+      triggerSource: 'cron-daily',
+    }
+    await executeSeoTool('propose_action', baseInput, cronCtx)
+
+    // DB write still happens
+    expect(vi.mocked(createApproval)).toHaveBeenCalledOnce()
+    // BUT no Slack card — the daily report will surface this approval inline
+    expect(vi.mocked(presenter.requestApproval)).not.toHaveBeenCalled()
+  })
+
+  it('SUPPRESSES the individual Slack card when triggerSource is cron-weekly', async () => {
+    const cronCtx: SeoToolContext = {
+      tenantId:      'test-tenant',
+      runId:         'run-1',
+      taskId:        'task-1',
+      channelId:     'C_CHANNEL',
+      triggerSource: 'cron-weekly',
+    }
+    await executeSeoTool('propose_action', baseInput, cronCtx)
+    expect(vi.mocked(presenter.requestApproval)).not.toHaveBeenCalled()
+  })
+
+  it('STILL POSTS individual Slack card for ad-hoc triggers (slack-mention)', async () => {
+    const adHocCtx: SeoToolContext = {
+      tenantId:      'test-tenant',
+      runId:         'run-1',
+      taskId:        'task-1',
+      channelId:     'C_CHANNEL',
+      triggerSource: 'slack-mention',
+    }
+    await executeSeoTool('propose_action', baseInput, adHocCtx)
+    expect(vi.mocked(presenter.requestApproval)).toHaveBeenCalledOnce()
+  })
+
+  it('defaults to posting individual cards when triggerSource is undefined (back-compat)', async () => {
+    // ctxWithChannel has no triggerSource — should behave as ad-hoc
+    await executeSeoTool('propose_action', baseInput, ctxWithChannel)
+    expect(vi.mocked(presenter.requestApproval)).toHaveBeenCalledOnce()
   })
 })

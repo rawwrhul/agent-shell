@@ -27,34 +27,34 @@ export const ITERATION_CAPS: Record<TaskIntent, number> = {
   propose_changes:  15,
   execute_approved: 10,
   daily_generation: 20,
+  weekly_audit:     20,   // bigger window: look across the week's deltas
+  weekly_digest:    12,   // simpler: gather + format wins, no deep research
 }
 
 /**
  * max_tokens passed to anthropic.messages.create per call, by intent.
- * daily_generation needs headroom for page-draft content in tool results
- * and propose_action calls that include long proposedAction strings.
+ * daily_generation and weekly_audit need headroom for long reports.
  */
 export const MAX_TOKENS_PER_CALL: Record<TaskIntent, number> = {
   investigate:       4096,
   propose_changes:   8096,
   execute_approved:  4096,
   daily_generation: 16384,
+  weekly_audit:     16384,
+  weekly_digest:     8096,
 }
 
 /**
- * Per-specialist-run token ceiling enforced by the minimal budget check
- * shipped with the 12 May structural hardening. Hitting this ceiling
- * fails the subtask with a clear error rather than letting it blow past
- * into the 1.8M-token tarino-audit territory.
- *
- * daily_generation gets a bigger ceiling because legitimate generation
- * runs across all four pillars + drafts + metrics can hit 700-900k tokens.
+ * Per-specialist-run token ceiling. Hitting this fails the subtask with
+ * a clear error rather than letting it blow into 1.8M-token territory.
  */
 export const PER_SUBAGENT_TOKEN_CEILING: Record<TaskIntent, number> = {
   investigate:       200_000,
   propose_changes:   500_000,
   execute_approved:  100_000,
   daily_generation: 1_000_000,
+  weekly_audit:     1_000_000,
+  weekly_digest:     300_000,
 }
 
 /**

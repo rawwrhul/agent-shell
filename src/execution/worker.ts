@@ -118,17 +118,75 @@ async function processJob(job: Job<ExecutionJobPayload>): Promise<void> {
     )
     logger.info('execution_success', { approvalId, toolName, summary: result.summary })
 
-    // Best-effort presenter update so the Slack anchor reflects "shipped"
+    // Task 0.5.1: post the success message to Slack so the operator sees
+    // what shipped. Looks up the channel from the approval row (cron-fired
+    // and ad-hoc approvals both have slack_channel_id set, defaulted to
+    // tenant.slackChannelId by the seo skill).
     try {
-      await (presenter as any).notifyExecutionResult?.(taskId, approvalId, { ok: true, summary: result.summary })
+      const { rows: approvalRows } = await pool().query<{ slack_channel_id: string | null }>(
+        `SELECT slack_channel_id FROM approval_requests WHERE id = $1`, [approvalId],
+      )
+      const channelId = approvalRows[0]?.slack_channel_id ?? tenant.slackChannelId
+      const liveUrl = extractLiveUrlFromResult(result)
+      await presenter.notifyExecutionResult({
+        tenantId:   tenantId,
+        channelId,
+        taskId,
+        approvalId,
+        toolName,
+        ok:         true,
+        summary:    result.summary,
+        liveUrl,
+        tenantName: tenant.clientName,
+      })
     } catch (err) {
       logger.warn('presenter_notify_failed', { taskId, approvalId, err: String(err).slice(0, 200) })
     }
   } else {
     await markFailed(approvalId, taskId, toolName, result.error ?? result.summary)
+
+    // Task 0.5.1: also post the failure message so the operator knows
+    // the approved change didn't actually ship. Don't surface raw stack
+    // traces — `result.summary` is the human-readable failure reason.
+    try {
+      const { rows: approvalRows } = await pool().query<{ slack_channel_id: string | null }>(
+        `SELECT slack_channel_id FROM approval_requests WHERE id = $1`, [approvalId],
+      )
+      const channelId = approvalRows[0]?.slack_channel_id ?? tenant.slackChannelId
+      await presenter.notifyExecutionResult({
+        tenantId:   tenantId,
+        channelId,
+        taskId,
+        approvalId,
+        toolName,
+        ok:         false,
+        summary:    result.summary,
+        tenantName: tenant.clientName,
+      })
+    } catch (err) {
+      logger.warn('presenter_notify_failed_on_failure', { taskId, approvalId, err: String(err).slice(0, 200) })
+    }
     // Surface as throw so BullMQ records the failed attempt for its retry logic
     throw new Error(`Execution failed: ${result.summary} (${result.error ?? 'no error detail'})`)
   }
+}
+
+/**
+ * Best-effort extraction of a "view it live" URL from the execution
+ * result. Different integrations stash this in different places — try
+ * the common shapes, fall back to undefined (the result message just
+ * omits the View live link in that case).
+ */
+function extractLiveUrlFromResult(result: { ok: boolean; summary: string; detail?: Record<string, unknown> }): string | undefined {
+  const d = result.detail
+  if (!d || typeof d !== 'object') return undefined
+  // Framer: detail.preview.hostnames[0] (publish result)
+  const preview = (d as { preview?: { hostnames?: string[] } }).preview
+  if (preview?.hostnames?.[0]) return `https://${preview.hostnames[0]}/`
+  // Direct fields
+  if (typeof (d as { liveUrl?: string }).liveUrl === 'string') return (d as { liveUrl: string }).liveUrl
+  if (typeof (d as { url?: string }).url === 'string')         return (d as { url: string }).url
+  return undefined
 }
 
 async function markFailed(approvalId: string, _taskId: string, toolName: string, error: string): Promise<void> {

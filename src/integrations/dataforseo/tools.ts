@@ -83,6 +83,24 @@ export const DATAFORSEO_TOOLS: Anthropic.Tool[] = [
       required: ['target'],
     },
   },
+  {
+    name: 'dataforseo_competitor_research',
+    description:
+      "Discover competitors for a domain — returns top 5-10 domains that rank for overlapping keywords, with intersection counts and traffic estimates. " +
+      "USE THIS when the tenant.competitorDomains list is empty or you want to validate the configured competitors. " +
+      "Returns one row per competitor with: domain, intersections (shared keywords), avg_position (where they rank), etv (estimated organic traffic). " +
+      "Run once per tenant context, not per query — results are stable day-to-day.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        target:       { type: 'string', description: 'Target domain, e.g. "tarino.au" (no protocol or path)' },
+        limit:        { type: 'number', description: 'Max competitors to return (default 10)' },
+        locationCode: { type: 'number', description: 'DataForSEO location code (2036 = Australia, default)' },
+        languageCode: { type: 'string', description: 'ISO language code (default "en")' },
+      },
+      required: ['target'],
+    },
+  },
 ]
 
 const DATAFORSEO_TOOL_NAMES = new Set(DATAFORSEO_TOOLS.map(t => t.name))
@@ -126,6 +144,12 @@ export async function executeDataForSeoTool(
         const i = input as { target: string }
         if (!i.target) return 'dataforseo_backlinks_summary error: target required'
         const r = await dfs.backlinksSummary(tenant, i)
+        return JSON.stringify(r, null, 2)
+      }
+      case 'dataforseo_competitor_research': {
+        const i = input as { target: string; limit?: number; locationCode?: number; languageCode?: string }
+        if (!i.target) return 'dataforseo_competitor_research error: target required'
+        const r = await dfs.competitorsDomain(tenant, i)
         return JSON.stringify(r, null, 2)
       }
       default:

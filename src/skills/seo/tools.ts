@@ -219,6 +219,15 @@ export interface SeoToolContext {
   runId:      string;
   taskId:     string;
   channelId?: string;
+  /**
+   * Task 0.5.1: source trigger of the parent task. When set to a cron-*
+   * value, propose_action suppresses the individual Slack approval card —
+   * approvals get surfaced via the run's final anchor report instead, which
+   * gives the operator one consolidated "morning brief" message instead of
+   * a wall of cards. Ad-hoc tasks (slash command / mention / manual) post
+   * each approval directly because the operator is actively waiting.
+   */
+  triggerSource?: 'slack-mention' | 'slack-command' | 'cron-daily' | 'cron-weekly' | 'cron-end-of-week' | 'manual';
 }
 
 export async function executeSeoTool(
@@ -393,8 +402,13 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
   // 2. Mirror to Sheet (persistent audit record — best-effort, same ID).
   //    Failures logged but don't block: the approval still works end-to-end
   //    via Slack + PG; only the Sheet record is missing.
+  //
+  //    Tenant lookup is hoisted out of the try block (Task 0.5.1) so we can
+  //    also use it for the Slack card (clientName for the headline). If
+  //    the lookup itself fails, fall back to ctx.tenantId for the card.
+  let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
   try {
-    const tenant = await getTenant(ctx.tenantId);
+    tenant = await getTenant(ctx.tenantId);
     const sheetResult = await createApprovalRequest(tenant, {
       id:         approval.id,
       taskId:     ctx.taskId,
@@ -418,8 +432,14 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     });
   }
 
-  // 3. Post Slack card (best-effort — DB is authoritative; card is informational)
-  if (ctx.channelId) {
+  // 3. Post Slack card (best-effort — DB is authoritative; card is informational).
+  //    Task 0.5.1: cron-fired runs (daily/weekly/end-of-week) SKIP the
+  //    individual card. The aggregator's final anchor report surfaces
+  //    the approvals in a single consolidated "morning brief" message
+  //    with inline action buttons instead of dropping N separate cards.
+  //    Ad-hoc tasks (operator actively waiting) still post in real time.
+  const isCronFired = !!ctx.triggerSource && ctx.triggerSource.startsWith('cron-')
+  if (ctx.channelId && !isCronFired) {
     try {
       await presenter.requestApproval({
         tenantId:   ctx.tenantId,
@@ -427,9 +447,12 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         taskId:     ctx.taskId,
         toolName:   i.toolName,
         riskLevel:  approval.riskLevel,
-        riskReason: [i.proposedAction, i.whyPriority].filter(Boolean).join('\n\n'),
+        riskReason: i.whyPriority ?? `Priority ${i.priority}.`,
         approvalId: approval.id,
         previewUrl: i.previewUrl,
+        // ── new fields ──────────────────────────────────────────────
+        tenantName: tenant?.clientName,
+        summary:    i.proposedAction,
       });
     } catch (err) {
       logger.warn('seo_approval_slack_post_failed', {
@@ -437,6 +460,11 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         err: String(err).slice(0, 200),
       });
     }
+  } else if (isCronFired) {
+    logger.info('seo_approval_cron_batched', {
+      tenantId: ctx.tenantId, approvalId: approval.id, trigger: ctx.triggerSource,
+      hint: 'Cron-fired run; approval will surface in the final anchor report rather than as an individual card.',
+    });
   }
 
   return `Approval ${approval.id.slice(0, 8)} filed (${approval.priority}, risk ${approval.riskLevel}).`;

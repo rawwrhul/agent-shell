@@ -8,6 +8,8 @@
 import type {
   RunState, SpecialistEntry,
   ApprovalRequestInput, ApprovalResolvedInput, BudgetWarningInput,
+  ExecutionResultInput,
+  PendingNudgeInput,
 } from './types';
 import { isStructuredReport } from './types';
 import {
@@ -141,17 +143,52 @@ export function renderFinalReport(report: string, clientName: string): RenderedM
 // ── Approval messages ───────────────────────────────────────────────
 
 export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMessage {
+  // Task 0.5.1 polish: use caller-provided fields when present, fall back to
+  // sensible defaults derived from the input. The previous adapter used
+  // tenantId literally for headline ("Approval needed — tarino") and the
+  // raw tool name in backticks for summary, both of which read like CLI
+  // output rather than a colleague's message.
+  const tenantName = input.tenantName ?? input.tenantId
+  const summary = input.summary
+    ?? `\`${input.toolName}\` requested (${input.riskLevel} risk)`
+  const actionKind = input.actionKind ?? inferActionKind(input.toolName)
+
   const req: ApprovalRequest = {
-    tenantName: input.tenantId,
+    tenantName,
     runId: input.taskId,
-    summary: `\`${input.toolName}\` requested (${input.riskLevel} risk)`,
+    summary,
     detail: input.riskReason,
-    actionKind: 'other',
+    actionKind,
     previewUrl: input.previewUrl,
     requestedAt: new Date(),
     approvalId: input.approvalId,
   };
   return renderApprovalRequestBlocks(req);
+}
+
+/**
+ * Best-effort mapping from tool name to ApprovalActionKind. Drives the
+ * approval card's icon and button labels. Callers that know better can
+ * pass `actionKind` explicitly on ApprovalRequestInput to override.
+ */
+function inferActionKind(toolName: string): import('./blocks/approval').ApprovalActionKind {
+  const n = toolName.toLowerCase()
+  // Framer page operations + GSC submission = publishing content
+  if (n.startsWith('framer_create_draft_page')) return 'publish_content'
+  if (n.startsWith('framer_update_page_draft')) return 'publish_content'
+  if (n.startsWith('framer_publish'))            return 'publish_content'
+  if (n.startsWith('framer_deploy'))             return 'publish_content'
+  if (n.startsWith('framer_update_page_seo'))    return 'modify_live_page'
+  if (n.startsWith('framer_update_cms'))         return 'modify_live_page'
+  if (n.startsWith('framer_'))                   return 'modify_live_page'
+  if (n.startsWith('gsc_submit') || n.startsWith('gsc_request')) return 'publish_content'
+  // Outreach-type
+  if (n.startsWith('email_') || n.startsWith('send_') || n.startsWith('slack_post'))
+    return 'send_external_message'
+  // Internal data writes
+  if (n.startsWith('log_') || n.startsWith('upsert_') || n.startsWith('snapshot_'))
+    return 'commit_data_change'
+  return 'other'
 }
 
 export function renderApprovalResolved(input: ApprovalResolvedInput): RenderedMessage {
@@ -191,7 +228,84 @@ export function renderBudgetWarning(input: BudgetWarningInput): RenderedMessage 
   };
 }
 
-// ── Helpers preserved for downstream callers / tests ────────────────
+// ── Execution result (Task 0.5.1) ───────────────────────────────────
+//
+// Posted after the executor worker has actually performed an approved
+// action. Closes the loop after the operator clicks Approve — without
+// this, the experience is "Approved" then silence. With it, the operator
+// sees what shipped (or what failed).
+
+export function renderExecutionResult(input: ExecutionResultInput): RenderedMessage {
+  const tenantName = input.tenantName ?? input.tenantId
+  const icon = input.ok ? ':white_check_mark:' : ':x:'
+  const verb = input.ok ? 'Done' : 'Couldn\'t publish'
+  const headline = `${icon}  ${verb} — ${tenantName}`
+
+  const blocks: import('@slack/web-api').KnownBlock[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${headline}*\n${input.summary}`,
+      },
+    },
+  ]
+
+  if (input.ok && input.liveUrl) {
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: `<${input.liveUrl}|View it live ↗>`,
+      }],
+    })
+  }
+
+  return {
+    text: input.ok
+      ? `Change published for ${tenantName}: ${input.summary}`
+      : `Couldn't publish for ${tenantName}: ${input.summary}`,
+    blocks,
+  }
+}
+
+// ── Pending-too-long nudge (Task 0.5.1) ─────────────────────────────
+//
+// A daily background scanner finds tenants with approvals pending past
+// the threshold (default 48h) and posts one of these per tenant. One
+// nudge per cooldown window (24h) so we don't spam.
+
+export function renderPendingNudge(input: PendingNudgeInput): RenderedMessage {
+  const noun = input.pendingCount === 1 ? 'change' : 'changes'
+  const verb = input.pendingCount === 1 ? 'is'     : 'are'
+  const dayWord = input.oldestDaysAgo === 1 ? 'day' : 'days'
+  const summary = input.pendingCount === 1
+    ? `You have 1 change waiting on you (oldest is ${input.oldestDaysAgo} ${dayWord} old).`
+    : `You have ${input.pendingCount} changes waiting on you (oldest is ${input.oldestDaysAgo} ${dayWord} old).`
+
+  const blocks: import('@slack/web-api').KnownBlock[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `:wave:  *Friendly nudge — ${input.tenantName}*\n${summary}`,
+      },
+    },
+    {
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: `Scroll up to find the approval cards. Each one ${verb} a small ${noun} drafted for your site that just needs a thumbs-up.`,
+      }],
+    },
+  ]
+
+  return {
+    text: `${input.tenantName}: ${input.pendingCount} ${noun} pending`,
+    blocks,
+  }
+}
+
 
 export function formatDuration(ms: number): string {
   if (ms < 0) ms = 0;
