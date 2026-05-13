@@ -39,11 +39,17 @@ let _connectFn: ((projectUrl: string, apiKey: string) => Promise<FramerClient>) 
 
 async function getConnect(): Promise<(projectUrl: string, apiKey: string) => Promise<FramerClient>> {
   if (_connectFn) return _connectFn
-  // Lazy import so test environments without the dep installed still load
-  // the rest of the integrations module.
-  const mod = await import('framer-api')
-  // The package exports `connect` per the docs.
-  _connectFn = (mod as { connect: (url: string, key: string) => Promise<FramerClient> }).connect
+  // framer-api is an ESM-only package with top-level await. Our build emits
+  // CommonJS (tsconfig "module": "CommonJS"), so TypeScript would silently
+  // downlevel a plain `await import('framer-api')` into
+  // `Promise.resolve(require('framer-api'))` — which throws
+  // ERR_REQUIRE_ASYNC_MODULE at runtime because Node 22 can't `require()` an
+  // ESM module with top-level await. Hide the import() expression inside
+  // `new Function` so TS can't see it and won't transform it. The runtime
+  // then evaluates a real native dynamic import.
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (s: string) => Promise<unknown>
+  const mod = await dynamicImport('framer-api') as { connect?: (url: string, key: string) => Promise<FramerClient> }
+  _connectFn = mod.connect ?? null
   if (!_connectFn) throw new Error('framer-api: connect not found on module')
   return _connectFn
 }
