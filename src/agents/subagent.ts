@@ -230,7 +230,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     taskIntent,
   })
   const memoryToolCtx = { tenantId: task.tenantId, runId: task.id }
-  const seoToolCtx = { tenantId: task.tenantId, runId: task.id, taskId: task.id }
+  const seoToolCtx = { tenantId: task.tenantId, runId: task.id, taskId: task.id, channelId: task.slackChannelId }
 
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMsg }]
   let tokenCount = 0, toolCount = 0, finalOutput = ''

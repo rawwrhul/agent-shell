@@ -25,6 +25,7 @@ import type { ActionType } from '../../seo/types';
 import { createApproval, recordSheetRowNumber } from '../../hitl/state-store';
 import { createApprovalRequest } from '../../hitl/sheets';
 import { getTenant } from '../../tenants/registry';
+import { presenter } from '../../core/slack';
 import { logger } from '../../logger';
 
 let _pool: Pool | null = null;
@@ -203,9 +204,10 @@ export function isSeoToolName(name: string): boolean {
 }
 
 export interface SeoToolContext {
-  tenantId: string;
-  runId:    string;
-  taskId:   string;
+  tenantId:   string;
+  runId:      string;
+  taskId:     string;
+  channelId?: string;
 }
 
 export async function executeSeoTool(
@@ -400,6 +402,26 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
       err: String(err).slice(0, 200),
       hint: 'Approval works via Slack + PG; persistent Sheet record missing this row.',
     });
+  }
+
+  // 3. Post Slack card (best-effort — DB is authoritative; card is informational)
+  if (ctx.channelId) {
+    try {
+      await presenter.requestApproval({
+        tenantId:   ctx.tenantId,
+        channelId:  ctx.channelId,
+        taskId:     ctx.taskId,
+        toolName:   i.toolName,
+        riskLevel:  approval.riskLevel,
+        riskReason: [i.proposedAction, i.whyPriority].filter(Boolean).join('\n\n'),
+        approvalId: approval.id,
+      });
+    } catch (err) {
+      logger.warn('seo_approval_slack_post_failed', {
+        tenantId: ctx.tenantId, approvalId: approval.id,
+        err: String(err).slice(0, 200),
+      });
+    }
   }
 
   return `Approval ${approval.id.slice(0, 8)} filed (${approval.priority}, risk ${approval.riskLevel}).`;
