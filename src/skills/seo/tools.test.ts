@@ -118,9 +118,21 @@ describe('propose_action', () => {
     )
   })
 
-  it('does NOT call presenter.requestApproval when channelId is absent', async () => {
+  it('falls back to tenant.slackChannelId when ctx.channelId is absent (Task 0.5.1 hotfix)', async () => {
     await executeSeoTool('propose_action', baseInput, ctxWithoutChannel)
 
+    // Mock tenant has slackChannelId='C_TEST' — should be used as fallback
+    expect(vi.mocked(presenter.requestApproval)).toHaveBeenCalledOnce()
+    const call = vi.mocked(presenter.requestApproval).mock.calls[0][0]
+    expect(call.channelId).toBe('C_TEST')
+  })
+
+  it('does NOT call presenter.requestApproval when neither ctx.channelId nor tenant.slackChannelId is set', async () => {
+    const { getTenant } = await import('../../tenants/registry')
+    vi.mocked(getTenant).mockResolvedValueOnce({
+      tenantId: 'test-tenant', clientName: 'Test Co', slackChannelId: null,
+    } as never)
+    await executeSeoTool('propose_action', baseInput, ctxWithoutChannel)
     expect(vi.mocked(presenter.requestApproval)).not.toHaveBeenCalled()
   })
 

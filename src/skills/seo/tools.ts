@@ -384,6 +384,17 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     previewUrl?: string;
   };
 
+  // Task 0.5.1 hotfix: hoist tenant lookup so we can use tenant.slackChannelId
+  //   as a fallback for ctx.channelId (which can be null when the task wasn't
+  //   initiated via a Slack mention). Without this fallback, approval rows
+  //   get created with slack_channel_id=NULL, the Slack-post gate below
+  //   evaluates to false, and no card ever appears in the channel — the
+  //   operator only knows about the approval if they happen to be checking
+  //   the DB.
+  let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
+  try { tenant = await getTenant(ctx.tenantId); } catch { /* fall through with null */ }
+  const effectiveChannelId = ctx.channelId ?? tenant?.slackChannelId ?? null;
+
   // 1. Write to PG (operational state — required, agent polls this)
   const approval = await createApproval(pool(), {
     tenantId:       ctx.tenantId,
@@ -397,39 +408,36 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     detail:         i.detail ?? [],
     whyPriority:    i.whyPriority,
     previewUrl:     i.previewUrl,
+    slackChannelId: effectiveChannelId ?? undefined,
   });
 
   // 2. Mirror to Sheet (persistent audit record — best-effort, same ID).
   //    Failures logged but don't block: the approval still works end-to-end
   //    via Slack + PG; only the Sheet record is missing.
-  //
-  //    Tenant lookup is hoisted out of the try block (Task 0.5.1) so we can
-  //    also use it for the Slack card (clientName for the headline). If
-  //    the lookup itself fails, fall back to ctx.tenantId for the card.
-  let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
-  try {
-    tenant = await getTenant(ctx.tenantId);
-    const sheetResult = await createApprovalRequest(tenant, {
-      id:         approval.id,
-      taskId:     ctx.taskId,
-      sessionId:  ctx.runId,
-      toolName:   i.toolName,
-      toolInput:  i.toolInput,
-      riskLevel:  approval.riskLevel,
-      riskReason: i.whyPriority ?? `Proposed via SEO skill, priority ${i.priority}.`,
-    });
-    if (sheetResult.rowNumber != null) {
-      await recordSheetRowNumber(pool(), approval.id, sheetResult.rowNumber)
-        .catch(err => logger.warn('approval_sheet_row_record_failed', {
-          approvalId: approval.id, err: String(err),
-        }));
+  if (tenant) {
+    try {
+      const sheetResult = await createApprovalRequest(tenant, {
+        id:         approval.id,
+        taskId:     ctx.taskId,
+        sessionId:  ctx.runId,
+        toolName:   i.toolName,
+        toolInput:  i.toolInput,
+        riskLevel:  approval.riskLevel,
+        riskReason: i.whyPriority ?? `Proposed via SEO skill, priority ${i.priority}.`,
+      });
+      if (sheetResult.rowNumber != null) {
+        await recordSheetRowNumber(pool(), approval.id, sheetResult.rowNumber)
+          .catch(err => logger.warn('approval_sheet_row_record_failed', {
+            approvalId: approval.id, err: String(err),
+          }));
+      }
+    } catch (err) {
+      logger.warn('seo_approval_sheet_write_failed', {
+        tenantId: ctx.tenantId, approvalId: approval.id,
+        err: String(err).slice(0, 200),
+        hint: 'Approval works via Slack + PG; persistent Sheet record missing this row.',
+      });
     }
-  } catch (err) {
-    logger.warn('seo_approval_sheet_write_failed', {
-      tenantId: ctx.tenantId, approvalId: approval.id,
-      err: String(err).slice(0, 200),
-      hint: 'Approval works via Slack + PG; persistent Sheet record missing this row.',
-    });
   }
 
   // 3. Post Slack card (best-effort — DB is authoritative; card is informational).
@@ -439,11 +447,11 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
   //    with inline action buttons instead of dropping N separate cards.
   //    Ad-hoc tasks (operator actively waiting) still post in real time.
   const isCronFired = !!ctx.triggerSource && ctx.triggerSource.startsWith('cron-')
-  if (ctx.channelId && !isCronFired) {
+  if (effectiveChannelId && !isCronFired) {
     try {
       await presenter.requestApproval({
         tenantId:   ctx.tenantId,
-        channelId:  ctx.channelId,
+        channelId:  effectiveChannelId,
         taskId:     ctx.taskId,
         toolName:   i.toolName,
         riskLevel:  approval.riskLevel,
