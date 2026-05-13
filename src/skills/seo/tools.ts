@@ -153,7 +153,10 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
     name: 'propose_action',
     description:
       "Create a HITL approval request for any action that touches the public site or sends external " +
-      "messages. DOES NOT execute — only files the request.",
+      "messages. DOES NOT execute — only files the request. " +
+      "When the action is a Framer page change you've already drafted via framer_create_draft_page or " +
+      "framer_update_page_draft, pass the previewUrl through — the Slack approval card renders it as a " +
+      "'View preview ↗' link the operator can click before approving.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -164,6 +167,14 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
         whyPriority:    { type: 'string' },
         priority:       { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
         riskLevel:      { type: 'string', enum: ['low', 'medium', 'high'] },
+        previewUrl: {
+          type: 'string',
+          description:
+            "Optional URL the operator can click to preview the change before approving. " +
+            "For Framer page drafts, pass the previewUrl returned by framer_create_draft_page " +
+            "or framer_update_page_draft. The Slack approval card renders this as a clickable " +
+            "'View preview ↗' link.",
+        },
       },
       required: ['toolName', 'toolInput', 'proposedAction', 'priority'],
     },
@@ -360,6 +371,8 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     whyPriority?: string;
     priority: 'P0' | 'P1' | 'P2' | 'P3';
     riskLevel?: 'low' | 'medium' | 'high';
+    /** Task 0.5: optional preview URL (Framer staging URL for draft pages). */
+    previewUrl?: string;
   };
 
   // 1. Write to PG (operational state — required, agent polls this)
@@ -374,6 +387,7 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     proposedAction: i.proposedAction,
     detail:         i.detail ?? [],
     whyPriority:    i.whyPriority,
+    previewUrl:     i.previewUrl,
   });
 
   // 2. Mirror to Sheet (persistent audit record — best-effort, same ID).
@@ -415,6 +429,7 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         riskLevel:  approval.riskLevel,
         riskReason: [i.proposedAction, i.whyPriority].filter(Boolean).join('\n\n'),
         approvalId: approval.id,
+        previewUrl: i.previewUrl,
       });
     } catch (err) {
       logger.warn('seo_approval_slack_post_failed', {

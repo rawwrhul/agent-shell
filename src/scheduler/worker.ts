@@ -100,11 +100,26 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
 
 function buildPromptForRunKind(kind: RunKind, clientName: string): string {
   if (kind === 'daily') {
-    return `Daily run for ${clientName}. Execute the daily SEO loop: ` +
-      `(1) ship any approved content/schema/optimisations from the queue, ` +
-      `(2) snapshot key metrics, ` +
-      `(3) surface fresh opportunities, ` +
-      `(4) draft any new approval requests for the upcoming day.`;
+    // GENERATION-FIRST daily prompt. The cron's job is to populate tomorrow's
+    // work pipeline, not to passively report state. The subagent's system
+    // prompt (when task_intent='daily_generation') expands on this with
+    // the four pillars (new pages, internal links, additive copy/meta,
+    // backlink opportunities) and the strict sequence.
+    return `Daily generation run for ${clientName}.
+
+Your job today is to PRODUCE WORK so the operator wakes up to a queue of decisions. Snapshotting metrics is the last step, not the first.
+
+This run is FAILED if it produces zero new propose_action calls AND zero new seo_opportunities rows. Target output: 2-5 propose_action calls + 3-5 seo_opportunities entries across the four pillars (new pages, internal links, additive copy/meta, backlink opportunities).
+
+Sequence (strict):
+1. Research — DataForSEO + Framer + competitor analysis to gather raw material
+2. Ideate — match findings against the four pillars
+3. Draft — for pillars 1-3, create Framer drafts via framer_create_draft_page or framer_update_page_draft BEFORE filing propose_action; the previewUrl from those tools MUST be threaded into propose_action so the Slack approval card includes a clickable preview link
+4. File — propose_action for pillars 1-3 (with previewUrl), log_opportunity for pillar 4 (backlinks need human outreach, not a click)
+5. Snapshot — snapshot_metrics last, for the baseline
+6. Report — write findings to output.md, end with SPECIALIST_COMPLETE
+
+Before filing propose_action, query approval_requests and seo_work_log for the last 7 days to avoid proposing duplicates.`;
   }
   return `Weekly audit for ${clientName}. Produce a strategic state-of-play covering: ` +
     `keyword movement, cluster progress vs targets, competitor activity, ` +

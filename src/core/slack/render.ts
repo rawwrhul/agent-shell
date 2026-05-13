@@ -147,6 +147,7 @@ export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMess
     summary: `\`${input.toolName}\` requested (${input.riskLevel} risk)`,
     detail: input.riskReason,
     actionKind: 'other',
+    previewUrl: input.previewUrl,
     requestedAt: new Date(),
     approvalId: input.approvalId,
   };

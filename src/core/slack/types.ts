@@ -80,6 +80,9 @@ export interface ApprovalRequestInput {
   riskLevel:  string;
   riskReason: string;
   approvalId: string;
+  /** Task 0.5: optional preview URL (Framer draft staging URL).
+   *  Renders as a clickable "View preview ↗" link in the approval card. */
+  previewUrl?: string;
 }
 
 export interface ApprovalResolvedInput {

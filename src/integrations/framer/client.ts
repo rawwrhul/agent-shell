@@ -197,3 +197,219 @@ export async function updateCmsItem(
     throw new Error('framer-api: no updateCollectionItem/updateCmsItem method found')
   })
 }
+
+// ── Draft-mode operations (Task 0.5, 13 May 2026) ─────────────────────────
+//
+// Wrap Framer's Page Drafts feature (Pro & Enterprise plans). On Basic
+// plans where Drafts aren't available, fall back to creating pages as
+// live-but-noindex'd — the page exists at its URL but Google won't
+// index it. Operator can preview it. On approve, executor removes
+// the noindex.
+
+export interface DraftPageInput {
+  slug:             string
+  title:            string
+  metaDescription?: string
+  /**
+   * Page content as Framer block descriptors. Shape is loose because
+   * the framer-api package's block format is in flux; the wrapper passes
+   * it through. Typical: [{type:'heading',level:1,text:'...'}, {type:'paragraph',text:'...'}, ...]
+   */
+  contentBlocks:    Array<Record<string, unknown>>
+}
+
+export interface DraftPageResult {
+  pageId:      string
+  /** URL the operator clicks to preview. Either Framer staging URL or live noindex URL. */
+  previewUrl:  string
+  /** 'native_draft' = page is in Framer draft state; 'noindex_fallback' = live but hidden. */
+  mode:        'native_draft' | 'noindex_fallback'
+}
+
+/**
+ * Create a new page. Tries native draft first; falls back to live+noindex
+ * if the workspace plan doesn't support drafts.
+ */
+export async function createDraftPage(
+  tenant: TenantConfig,
+  input:  DraftPageInput,
+): Promise<DraftPageResult> {
+  return withFramerSession(tenant, async (fr): Promise<DraftPageResult> => {
+    const createArgs = {
+      slug:            input.slug,
+      title:           input.title,
+      metaDescription: input.metaDescription,
+      content:         input.contentBlocks,
+      isDraft:         true,    // Pro/Enterprise: respected; Basic: ignored
+    }
+
+    let created: unknown
+    try {
+      if (typeof fr.createPage === 'function') {
+        created = await fr.createPage(createArgs)
+      } else if (typeof fr.createWebPage === 'function') {
+        created = await fr.createWebPage(createArgs)
+      } else if (typeof fr.addPage === 'function') {
+        created = await fr.addPage(createArgs)
+      } else {
+        throw new Error('framer-api: no createPage/createWebPage/addPage method found')
+      }
+    } catch (err) {
+      const msg = String(err).toLowerCase()
+      // Detect plan-tier rejection — typically a 403 or "drafts not available" / "upgrade plan".
+      if (msg.includes('draft') && (msg.includes('plan') || msg.includes('permission') || msg.includes('upgrade'))) {
+        logger.warn('framer_drafts_unavailable_on_plan', {
+          tenantId: tenant.tenantId, err: String(err).slice(0, 200),
+        })
+        return await createPageWithNoindexFallback(tenant, fr, input)
+      }
+      throw err
+    }
+
+    const page = created as { id?: string; pageId?: string; previewUrl?: string; staging_url?: string; url?: string }
+    const pageId = page.id ?? page.pageId
+    if (!pageId) throw new Error('framer-api: createPage did not return a page ID')
+
+    const previewUrl = await resolvePreviewUrl(fr, pageId, page)
+    logger.info('framer_draft_page_created', {
+      tenantId: tenant.tenantId, pageId, mode: 'native_draft',
+    })
+    return { pageId, previewUrl, mode: 'native_draft' }
+  })
+}
+
+async function createPageWithNoindexFallback(
+  tenant: TenantConfig,
+  fr:     FramerClient,
+  input:  DraftPageInput,
+): Promise<DraftPageResult> {
+  const createArgs = {
+    slug:            input.slug,
+    title:           input.title,
+    metaDescription: input.metaDescription,
+    content:         input.contentBlocks,
+    robots:          'noindex, nofollow',  // hide from search engines
+  }
+
+  let created: unknown
+  if (typeof fr.createPage === 'function') {
+    created = await fr.createPage(createArgs)
+  } else if (typeof fr.createWebPage === 'function') {
+    created = await fr.createWebPage(createArgs)
+  } else if (typeof fr.addPage === 'function') {
+    created = await fr.addPage(createArgs)
+  } else {
+    throw new Error('framer-api: no createPage method found for fallback')
+  }
+
+  const page = created as { id?: string; pageId?: string; url?: string }
+  const pageId = page.id ?? page.pageId
+  if (!pageId) throw new Error('framer-api: noindex fallback createPage did not return a page ID')
+
+  const previewUrl = page.url ?? await resolvePreviewUrl(fr, pageId, page)
+  logger.info('framer_noindex_fallback_page_created', {
+    tenantId: tenant.tenantId, pageId, mode: 'noindex_fallback',
+  })
+  return { pageId, previewUrl, mode: 'noindex_fallback' }
+}
+
+/**
+ * Push a draft revision of an existing page. Additions only — never
+ * use this to replace or remove existing content.
+ */
+export interface DraftRevisionInput {
+  pageId:    string
+  /**
+   * Object describing what to add: { afterSection: 'hero', blocks: [...] }
+   * or { metaDescriptionAppend: '...' } or { internalLinks: [{anchor, target, placement}] }.
+   * Shape is loose; describe placement + content.
+   */
+  additions: Record<string, unknown>
+}
+
+export async function updatePageDraft(
+  tenant: TenantConfig,
+  input:  DraftRevisionInput,
+): Promise<DraftPageResult> {
+  return withFramerSession(tenant, async (fr): Promise<DraftPageResult> => {
+    const updateArgs = {
+      pageId:  input.pageId,
+      changes: input.additions,
+      asDraft: true,
+    }
+
+    let updated: unknown
+    try {
+      if (typeof fr.updatePage === 'function') {
+        updated = await fr.updatePage(updateArgs)
+      } else if (typeof fr.editPage === 'function') {
+        updated = await fr.editPage(updateArgs)
+      } else if (typeof fr.setPageContent === 'function') {
+        updated = await fr.setPageContent(input.pageId, input.additions, { asDraft: true })
+      } else {
+        throw new Error('framer-api: no updatePage/editPage/setPageContent method found')
+      }
+    } catch (err) {
+      const msg = String(err).toLowerCase()
+      if (msg.includes('draft') && (msg.includes('plan') || msg.includes('permission'))) {
+        logger.warn('framer_draft_revision_unavailable', {
+          tenantId: tenant.tenantId, pageId: input.pageId, err: String(err).slice(0, 200),
+        })
+        // For revisions, fallback is RISKY (live edit bypasses approval).
+        // Surface the failure rather than ship to live.
+        throw new Error(
+          `Draft revisions not available on this workspace plan. Live edits would skip approval, ` +
+          `which is unsafe. Operator should upgrade plan or change content manually.`
+        )
+      }
+      throw err
+    }
+
+    const result = updated as { id?: string; pageId?: string; previewUrl?: string; staging_url?: string }
+    const previewUrl = await resolvePreviewUrl(fr, input.pageId, result)
+    return { pageId: input.pageId, previewUrl, mode: 'native_draft' }
+  })
+}
+
+/**
+ * Resolve the preview URL for a page (draft staging URL if available,
+ * otherwise live URL).
+ */
+export async function getPreviewUrl(tenant: TenantConfig, pageId: string): Promise<string> {
+  return withFramerSession(tenant, async (fr) => {
+    return resolvePreviewUrl(fr, pageId)
+  })
+}
+
+async function resolvePreviewUrl(
+  fr:     FramerClient,
+  pageId: string,
+  hint?:  { previewUrl?: string; staging_url?: string; url?: string },
+): Promise<string> {
+  if (hint?.previewUrl) return hint.previewUrl
+  if (hint?.staging_url) return hint.staging_url
+
+  if (typeof fr.getPreviewUrl === 'function') return fr.getPreviewUrl(pageId)
+  if (typeof fr.getStagingUrl === 'function') return fr.getStagingUrl(pageId)
+  if (typeof fr.getPage === 'function') {
+    const p = await fr.getPage(pageId) as { previewUrl?: string; url?: string }
+    if (p.previewUrl) return p.previewUrl
+    if (p.url) return p.url
+  }
+
+  if (hint?.url) return hint.url
+  throw new Error(`framer-api: could not resolve preview URL for pageId ${pageId}`)
+}
+
+/**
+ * Read the current body content of a page (not just SEO meta).
+ * Used by daily-generation pillars 2 and 3 to see what's already on
+ * the page before drafting an addition.
+ */
+export async function getPageContent(tenant: TenantConfig, slugOrPageId: string): Promise<unknown> {
+  return withFramerSession(tenant, async (fr) => {
+    if (typeof fr.getPage === 'function') return fr.getPage(slugOrPageId)
+    if (typeof fr.getPageContent === 'function') return fr.getPageContent(slugOrPageId)
+    throw new Error('framer-api: no getPage/getPageContent method found')
+  })
+}

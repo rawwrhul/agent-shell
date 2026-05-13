@@ -62,6 +62,8 @@ export interface ApprovalRow {
   sheetRowNumber:   number | null;
   deferUntil:       Date | null;
   updatedAt:        Date;
+  // Task 0.5 (13 May 2026):
+  previewUrl:       string | null;
 }
 
 const SELECT_COLS = `
@@ -86,7 +88,8 @@ const SELECT_COLS = `
   slack_message_ts  AS "slackMessageTs",
   sheet_row_number  AS "sheetRowNumber",
   defer_until       AS "deferUntil",
-  updated_at        AS "updatedAt"
+  updated_at        AS "updatedAt",
+  preview_url       AS "previewUrl"
 `;
 
 // ── Read ────────────────────────────────────────────────────────────
@@ -189,6 +192,11 @@ export interface CreateApprovalInput {
   slackChannelId?:  string;
   slackMessageTs?:  string;
   sheetRowNumber?:  number;
+  // Task 0.5 (13 May 2026): preview URL for the proposed change.
+  // Threaded into the Slack approval card as a clickable
+  // "View preview ↗" link. Typically a Framer staging URL for draft
+  // pages, or a live noindex URL if drafts aren't supported on plan.
+  previewUrl?:      string;
 }
 
 export async function createApproval(pool: Pool, input: CreateApprovalInput): Promise<ApprovalRow> {
@@ -196,9 +204,10 @@ export async function createApproval(pool: Pool, input: CreateApprovalInput): Pr
     `INSERT INTO approval_requests (
        tenant_id, task_id, session_id, tool_name, tool_input,
        risk_level, risk_reason, priority, proposed_action, detail,
-       why_priority, slack_channel_id, slack_message_ts, sheet_row_number
+       why_priority, slack_channel_id, slack_message_ts, sheet_row_number,
+       preview_url
      ) VALUES (
-       $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14
+       $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15
      )
      RETURNING ${SELECT_COLS}`,
     [
@@ -216,6 +225,7 @@ export async function createApproval(pool: Pool, input: CreateApprovalInput): Pr
       input.slackChannelId ?? null,
       input.slackMessageTs ?? null,
       input.sheetRowNumber ?? null,
+      input.previewUrl ?? null,
     ],
   );
   logger.info('approval_created', {

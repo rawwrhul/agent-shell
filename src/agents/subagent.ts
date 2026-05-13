@@ -65,6 +65,7 @@ import {
 import {
   captureBaselineCounts, reconcileOutput, ReconciliationCounts,
 } from './reconciliation'
+import { budgetsFor } from './intent-budgets'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -232,10 +233,31 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   const memoryToolCtx = { tenantId: task.tenantId, runId: task.id }
   const seoToolCtx = { tenantId: task.tenantId, runId: task.id, taskId: task.id, channelId: task.slackChannelId }
 
+  // Task 0.5: log the actual toolbelt the agent receives. If the agent
+  // later claims "DataForSEO tools unavailable" in its output, we can
+  // grep these logs to verify whether the tools were missing from the
+  // toolbelt (real wiring issue) or just hallucinated as unavailable
+  // (prompt or training issue).
+  logger.info('subagent_toolbelt', {
+    tenantId: tenant.tenantId,
+    taskId: task.id,
+    subTaskId: subTask.id,
+    taskIntent,
+    toolCount: tools.length,
+    toolNames: tools.map(t => t.name),
+    tenantIntegrations: tenant.integrations,
+  })
+
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMsg }]
   let tokenCount = 0, toolCount = 0, finalOutput = ''
 
-  const iterationCap = Math.min(config.AGENT_MAX_TURNS ?? HARD_ITERATION_CAP, HARD_ITERATION_CAP)
+  // Per-intent budgets. daily_generation gets bigger caps because it
+  // has to research multiple pillars + draft Framer content + file
+  // approvals + snapshot in one specialist run; the old HARD_ITERATION_CAP
+  // of 15 + max_tokens of 8096 caused this morning's cron to bail out
+  // after a snapshot-only output.
+  const budgets = budgetsFor(taskIntent)
+  const iterationCap = Math.min(config.AGENT_MAX_TURNS ?? budgets.iterationCap, budgets.iterationCap)
 
   try {
     let turns = 0
@@ -244,7 +266,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
       const response = await callAnthropicWithRetry({
         model:      tenant.agentModel,
-        max_tokens: 8096,
+        max_tokens: budgets.maxTokens,
         system:     cachedSystem(system),
         tools:      cachedTools(tools),
         messages,
@@ -501,6 +523,67 @@ You CAN:
 
 Your output is FINDINGS, not actions. If you notice something the operator might want to act on, surface it as a finding ("The homepage title is over 60 characters and may be truncating in search results") — do NOT try to file approvals. The operator will decide what to do.
 `
+    : taskIntent === 'daily_generation'
+    ? `# Task mode: DAILY GENERATION
+
+This task is the morning cron run. Your job is to GENERATE WORK so the operator wakes up to a queue of decisions. Snapshotting metrics is the last step, not the first.
+
+This run is FAILED if it produces:
+  - Zero new propose_action calls, AND
+  - Zero new rows in seo_opportunities
+
+Target output for a good run:
+  - 2-5 propose_action calls across pillars 1-3 (each with a Framer preview URL)
+  - 3-5 seo_opportunities entries across all four pillars
+
+## The four pillars
+
+You generate ideas in these four categories. Use them in priority order.
+
+### Pillar 1 — New pages worth writing
+Look at competitor sitemaps and DataForSEO keyword data. Find topics ${tenant.clientName}'s competitors rank for but ${tenant.clientName} doesn't have a page for. Draft the page in Framer first via framer_create_draft_page (returns a previewUrl), THEN file propose_action with previewUrl set to that staging URL.
+
+Pattern: "Competitor X ranks for 'seasonal workers Australia'. Drafted /seasonal-workers-australia at <previewUrl>. Approve to publish."
+
+### Pillar 2 — Internal linking opportunities
+Find pairs of existing pages where adding a link from page A to page B improves topical clustering. Use framer_update_page_draft to push a draft revision of page A with the new link. File propose_action with the resulting previewUrl.
+
+Pattern: "On /about, add internal link to /services in para 2 (preview at <url>). Approve to publish."
+
+### Pillar 3 — Additive copy or meta-data
+STRICTLY ADDITIVE. Never replace or remove existing copy — only add (new sections, FAQ items, expanded meta descriptions, alt text on images, additional examples). Push as a draft revision via framer_update_page_draft, file propose_action with previewUrl.
+
+Pattern: "On /home, add FAQ section with 4 pricing questions (preview at <url>). Approve to publish."
+
+### Pillar 4 — Backlink opportunities via competitors
+Use dataforseo_backlinks_summary on ${tenant.clientName}'s top 3 competitors. Find domains that link to them but not to ${tenant.clientName}. Surface to seo_opportunities via log_opportunity (NOT propose_action — these require human outreach, not a click).
+
+Pattern: log_opportunity("domain X.com links to competitor Y with anchor 'recruitment expert' — pitch them a guest post on Z topic", priority: P1)
+
+## Strict sequence
+
+1. RESEARCH — Call dataforseo_keyword_overview, dataforseo_backlinks_summary, framer_list_pages, framer_get_page_seo, web_fetch on competitor sitemaps. Gather raw material.
+2. IDEATE — Match findings against the four pillars.
+3. DRAFT — For pillars 1-3, create Framer drafts BEFORE filing propose_action. The previewUrl from the draft tool MUST be passed to propose_action.
+4. FILE — propose_action for pillars 1-3 (with previewUrl), log_opportunity for pillar 4.
+5. SNAPSHOT — snapshot_metrics for today's baseline. LAST, not first.
+6. REPORT — End with SPECIALIST_COMPLETE.
+
+If you run out of iteration budget before completing all 6 steps, that's still success IF you produced at least 1 propose_action AND 3 opportunities. If you only got to steps 5-6, that's a failed run.
+
+## Anti-padding
+
+Before filing propose_action or log_opportunity:
+  - Query approval_requests for the last 7 days. Skip duplicates.
+  - Query seo_opportunities for active items. Skip duplicates.
+  - Use query_recent_actions to see what's been shipped lately.
+
+Do NOT invent fake opportunities to hit the minimum. Quality over quota. If you genuinely can't find 3 opportunities, file what you can and explain why in your output.md.
+
+## Tool note on Framer drafts
+
+If framer_create_draft_page returns a previewUrl that looks like a normal live URL (no /staging/ prefix or similar), the workspace plan doesn't support native drafts and the page is live-but-noindex'd. That still works for preview-first approval flow — operator clicks the URL, sees the page (Google won't index it), approves to remove the noindex.
+`
     : `# Task mode: PROPOSE CHANGES (can file approvals)
 
 This task is in PROPOSE_CHANGES mode. The operator has asked for action. You have your full toolbelt including write-side SEO tools.
@@ -530,7 +613,7 @@ You do NOT:
 If the change is small and reversible (e.g. a memory/note for yourself), the memory tools and scratchpad are fine. Anything that touches the tenant's actual website or external accounts goes through propose_action.
 `
 
-  const seoLoggingHint = hasSeoSkill && taskIntent === 'propose_changes'
+  const seoLoggingHint = hasSeoSkill && (taskIntent === 'propose_changes' || taskIntent === 'daily_generation')
     ? `\nYou have SEO logging tools. When you ship work (post-approval, via the executor), find an opportunity, or measure a metric, write it to the database so the aggregator can build daily/weekly reports:
 - log_seo_action: record completed actions (anything shipped, deployed, published) → seo_work_log
 - log_opportunity: surface a finding worth doing later → seo_opportunities

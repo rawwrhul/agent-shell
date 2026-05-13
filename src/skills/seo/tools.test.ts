@@ -145,4 +145,37 @@ describe('propose_action', () => {
     const result = await executeSeoTool('propose_action', baseInput, ctxWithChannel)
     expect(result).toContain('aaaabbbb')
   })
+
+  // ── Task 0.5: previewUrl plumbing ──────────────────────────────────────
+
+  it('threads previewUrl into createApproval when supplied', async () => {
+    await executeSeoTool(
+      'propose_action',
+      { ...baseInput, previewUrl: 'https://staging.example.com/preview/abc' },
+      ctxWithChannel,
+    )
+    expect(vi.mocked(createApproval)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ previewUrl: 'https://staging.example.com/preview/abc' }),
+    )
+  })
+
+  it('threads previewUrl into presenter.requestApproval when supplied', async () => {
+    await executeSeoTool(
+      'propose_action',
+      { ...baseInput, previewUrl: 'https://staging.example.com/preview/abc' },
+      ctxWithChannel,
+    )
+    expect(vi.mocked(presenter.requestApproval)).toHaveBeenCalledWith(
+      expect.objectContaining({ previewUrl: 'https://staging.example.com/preview/abc' }),
+    )
+  })
+
+  it('omits previewUrl when not supplied (undefined, not empty string)', async () => {
+    await executeSeoTool('propose_action', baseInput, ctxWithChannel)
+    const presenterCall = vi.mocked(presenter.requestApproval).mock.calls[0][0]
+    expect(presenterCall.previewUrl).toBeUndefined()
+    const approvalCall = vi.mocked(createApproval).mock.calls[0][1]
+    expect(approvalCall.previewUrl).toBeUndefined()
+  })
 })
