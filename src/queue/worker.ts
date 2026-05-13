@@ -6,6 +6,7 @@ import { runOrchestrator }  from '../orchestrator/index'
 import { runSubagent }      from '../agents/subagent'
 import { runAggregator }    from '../orchestrator/aggregator'
 import { postToSlack }      from '../tenants/slackManager'
+import { presenter }        from '../core/slack'
 import { getTokenSpend }    from '../memory/postgres'
 import { logger }           from '../logger'
 
@@ -17,6 +18,9 @@ const worker = new Worker<AgentJob>(
     const { jobType, task, subTaskId } = job.data
     const tenant = await getTenant(task.tenantId)
     const post   = (text: string) => postToSlack(task.tenantId, task.slackChannelId, text)
+
+    // Register task with the presenter so lifecycle methods can look up tenant/channel
+    presenter.initRun(task)
 
     logger.info('job_processing', { jobType, tenantId: task.tenantId, taskId: task.id, subTaskId })
 

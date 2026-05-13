@@ -10,6 +10,7 @@ export interface HookContext {
   sessionId: string
   agentType: string
   tenant:    TenantConfig
+  channelId?: string
 }
 
 const APPROVAL_TIMEOUT = 30 * 60 * 1000 // 30 min

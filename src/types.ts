@@ -2,10 +2,12 @@ export type RiskLevel    = 'low' | 'medium' | 'high' | 'critical'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 export type AgentStatus  = 'running' | 'completed' | 'failed' | 'waiting_approval'
 export type JobType      = 'orchestrate' | 'subagent' | 'aggregate'
+export type TaskTrigger  = 'slack-mention' | 'slack-command' | 'cron-daily' | 'cron-weekly' | 'manual'
 
 export interface AgentTask {
   id: string; tenantId: string; agentType: string; prompt: string
   slackChannelId: string; slackUserId: string
+  trigger?: TaskTrigger
   metadata?: Record<string, unknown>; createdAt: Date
 }
 

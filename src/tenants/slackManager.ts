@@ -1,10 +1,14 @@
-import { App } from '@slack/bolt'
-import { TenantConfig } from './types'
+import { App }      from '@slack/bolt'
+import type { KnownBlock, BlockAction } from '@slack/bolt'
+import { TenantConfig }   from './types'
 import { listActiveTenants, getTenant } from './registry'
-import { enqueueTask } from '../queue/producer'
-import { getRunHistory } from '../memory/postgres'
+import { enqueueTask }    from '../queue/producer'
+import { getRunHistory }  from '../memory/postgres'
 import { getQueueMetrics } from '../queue/producer'
-import { logger } from '../logger'
+import { pool }           from '../memory/postgres'
+import { logger }         from '../logger'
+import { buildResolvedCard } from '../core/slack/blocks/proposal-card'
+import type { ApprovalCardData } from '../core/slack/blocks/types'
 
 const apps = new Map<string, App>()
 
@@ -17,14 +21,12 @@ export async function startAllTenantBots() {
       const tenant = await getTenant(row.tenant_id)
       await startTenantBot(tenant)
     } catch (err) {
-      // One failing tenant must not block others
       logger.error('tenant_bot_failed_to_start', { tenantId: row.tenant_id, err: String(err) })
     }
   }
 }
 
 export async function startTenantBot(tenant: TenantConfig) {
-  // Gracefully replace if already running
   if (apps.has(tenant.tenantId)) {
     await apps.get(tenant.tenantId)!.stop()
     apps.delete(tenant.tenantId)
@@ -111,10 +113,117 @@ export async function startTenantBot(tenant: TenantConfig) {
     }
   })
 
+  // ── Approval card actions ─────────────────────────────────────────────────
+
+  app.action('approve_action', async ({ body, ack, client }) => {
+    await ack()
+    const blockBody = body as BlockAction
+    const action = blockBody.actions[0]
+    if (!action || action.type !== 'button') return
+
+    const approvalId = (action as { value?: string }).value
+    if (!approvalId) return
+    const resolvedBy = blockBody.user.id
+    const resolvedAt = new Date()
+
+    try {
+      await resolveApprovalRequest(approvalId, 'approved', resolvedBy, resolvedAt, client, tenant)
+    } catch (err) {
+      logger.error('approve_action_failed', { approvalId, err: String(err).slice(0, 200) })
+    }
+  })
+
+  app.action('reject_action', async ({ body, ack, client }) => {
+    await ack()
+    const blockBody = body as BlockAction
+    const action = blockBody.actions[0]
+    if (!action || action.type !== 'button') return
+
+    const approvalId = (action as { value?: string }).value
+    if (!approvalId) return
+    const resolvedBy = blockBody.user.id
+    const resolvedAt = new Date()
+
+    try {
+      await resolveApprovalRequest(approvalId, 'rejected', resolvedBy, resolvedAt, client, tenant)
+    } catch (err) {
+      logger.error('reject_action_failed', { approvalId, err: String(err).slice(0, 200) })
+    }
+  })
+
   await app.start()
   apps.set(tenant.tenantId, app)
   logger.info('tenant_bot_started', { tenantId: tenant.tenantId, client: tenant.clientName })
 }
+
+// ── Approval resolution ───────────────────────────────────────────────────
+
+async function resolveApprovalRequest(
+  approvalId: string,
+  status: 'approved' | 'rejected',
+  resolvedBy: string,
+  resolvedAt: Date,
+  client: App['client'],
+  tenant: TenantConfig,
+): Promise<void> {
+  const res = await pool.query<{
+    id: string; tool_name: string; tool_input: Record<string, unknown>
+    risk_level: string; requested_at: Date
+    slack_message_ts: string | null; slack_channel_id: string | null
+  }>(
+    `UPDATE approval_requests
+     SET status=$2, resolved_by=$3, resolved_at=$4
+     WHERE id=$1 AND status='pending'
+     RETURNING id, tool_name, tool_input, risk_level, requested_at,
+               slack_message_ts, slack_channel_id`,
+    [approvalId, status, resolvedBy, resolvedAt],
+  )
+
+  if (!res.rows.length) {
+    logger.warn('approval_resolve_not_found_or_already_resolved', { approvalId })
+    return
+  }
+
+  const row = res.rows[0]
+  const ti  = row.tool_input
+  const toolName      = row.tool_name
+  const proposedAction = typeof ti?.proposedAction === 'string' ? ti.proposedAction : toolName
+  const whyPriority   = typeof ti?.whyPriority    === 'string' ? ti.whyPriority    : ''
+
+  const riskLevel = (['low', 'medium', 'high', 'critical'].includes(row.risk_level)
+    ? row.risk_level : 'medium') as 'low' | 'medium' | 'high' | 'critical'
+
+  logger.info('approval_resolved', { approvalId, status, resolvedBy, tenantId: tenant.tenantId })
+
+  // Update the original Slack card to show the resolved state
+  if (row.slack_message_ts && row.slack_channel_id) {
+    const cardData: ApprovalCardData = {
+      approvalId,
+      toolName,
+      proposedAction,
+      whyPriority,
+      riskLevel,
+      requestedAt:    row.requested_at,
+      specialistType: '',
+    }
+    const resolvedBlocks = buildResolvedCard(cardData, { status, resolvedBy, resolvedAt })
+
+    try {
+      await client.chat.update({
+        channel: row.slack_channel_id,
+        ts:      row.slack_message_ts,
+        blocks:  resolvedBlocks,
+        text:    status === 'approved'
+          ? `✅ Approved: ${proposedAction}`
+          : `❌ Rejected: ${proposedAction}`,
+      })
+    } catch (err) {
+      logger.warn('approval_card_update_failed', { approvalId, err: String(err).slice(0, 200) })
+    }
+  }
+}
+
+// ── Slack message posting ─────────────────────────────────────────────────
 
 export async function postToSlack(tenantId: string, channelId: string, text: string) {
   const app = apps.get(tenantId)
@@ -123,5 +232,35 @@ export async function postToSlack(tenantId: string, channelId: string, text: str
     await app.client.chat.postMessage({ channel: channelId, text, unfurl_links: false })
   } catch (err) {
     logger.error('slack_post_failed', { tenantId, channelId, err: String(err) })
+  }
+}
+
+/**
+ * Post a Block Kit message and return the message timestamp.
+ * The ts is stored in approval_requests.slack_message_ts so the card
+ * can be updated when the operator approves or rejects.
+ */
+export async function postBlocksToSlack(
+  tenantId:     string,
+  channelId:    string,
+  blocks:       KnownBlock[],
+  fallbackText: string,
+): Promise<string | undefined> {
+  const app = apps.get(tenantId)
+  if (!app) {
+    logger.warn('no_bot_for_tenant', { tenantId })
+    return undefined
+  }
+  try {
+    const res = await app.client.chat.postMessage({
+      channel:      channelId,
+      blocks,
+      text:         fallbackText,
+      unfurl_links: false,
+    })
+    return res.ts as string | undefined
+  } catch (err) {
+    logger.error('slack_blocks_post_failed', { tenantId, channelId, err: String(err) })
+    return undefined
   }
 }
