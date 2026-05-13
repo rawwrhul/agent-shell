@@ -32,7 +32,7 @@ import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
-const VALID_INTENTS: TaskIntent[] = ['investigate', 'propose_changes']
+const VALID_INTENTS: TaskIntent[] = ['investigate', 'propose_changes', 'daily_generation']
 
 export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Promise<void> {
   const sessionId = uuid()
@@ -142,11 +142,14 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
               continue
             }
 
-            // Validate task_intent. Default to propose_changes (back-compat
-            // and the safer choice if the orchestrator forgets to set it
-            // for a propose-style task).
+            // Validate task_intent. Default depends on the task trigger:
+            //   cron-daily  → daily_generation (production-focused, biggest budget)
+            //   everything else → propose_changes (back-compat default)
+            // If the orchestrator did set an explicit valid intent, that wins.
+            const triggerDefault: TaskIntent =
+              task.trigger === 'cron-daily' ? 'daily_generation' : 'propose_changes'
             const rawIntent = input.task_intent
-            let taskIntent: TaskIntent = 'propose_changes'
+            let taskIntent: TaskIntent = triggerDefault
             if (rawIntent && VALID_INTENTS.includes(rawIntent as TaskIntent)) {
               taskIntent = rawIntent as TaskIntent
             } else if (rawIntent) {

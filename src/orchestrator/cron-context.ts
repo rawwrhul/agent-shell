@@ -366,8 +366,8 @@ export function formatDailyDifferentialForPrompt(diff: DailyDifferential): strin
     `Today (last 24h):     ${diff.today.approvalRequestsCreated} new approvals, ${diff.today.approvalRequestsResolved} resolved, ${diff.today.workLogEntries} work-log entries, ${diff.today.opportunitiesSurfaced} new opportunities.`,
     `Yesterday (24-48h):   ${diff.yesterday.approvalRequestsCreated} new approvals, ${diff.yesterday.approvalRequestsResolved} resolved, ${diff.yesterday.workLogEntries} work-log entries, ${diff.yesterday.opportunitiesSurfaced} new opportunities.`,
     diff.materialActivityToday
-      ? 'Today had material activity. Report it normally.'
-      : 'Today had NO material activity. Say so plainly in one TL;DR bullet. Do not pad the report with restated past work or generic suggestions. The operator trusts honest "no change" reports more than padded ones.',
+      ? 'Today had material activity. Report it as part of today\'s output (e.g. proposals filed, shipped actions, opportunities surfaced).'
+      : 'Today is a clean canvas — no prior approvals, no recent work-log entries. Your job is to FILL it: produce 2-5 propose_action calls and 3-5 seo_opportunities across the four pillars (new pages, internal links, additive copy/meta, backlinks). A truly zero-output run is a failure to flag, not a quiet day to accept.',
   ].join('\n')
 }
 

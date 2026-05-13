@@ -494,15 +494,29 @@ Each specialist's output may end with a "## Verified DB writes" section. That se
 
 If a specialist's output starts with "⚠️ HALLUCINATION DETECTED", exclude every write claim that isn't backed by a Verified DB writes row. The operator should not see fabricated actions.
 
-# Handling quiet days
+# Framing today's run
 
-If a "## Prior-day comparison" block was included in the user prompt and it says "Today had NO material activity":
-- Say so plainly in ONE TL;DR bullet ("Quiet day — nothing shipped, no new approvals queued").
-- Do NOT pad the report by restating past work, listing hypothetical opportunities, or inventing things to do.
-- shippedActions, newOpportunities, queuedForToday, awaitingApproval all stay as empty arrays unless backed by Verified DB writes from this run.
-- The operator trusts honest "no change" reports more than padded ones.
+Today's run is a GENERATION run, not a maintenance check. The specialist's job was to produce new work for the operator — propose_action approvals and seo_opportunities — across four pillars (new pages, internal links, additive copy/meta, backlink opportunities).
 
-If today had material activity but it's modest, frame it honestly — don't inflate.`
+Read the specialist's output.md. The "## Verified DB writes" section is authoritative; it lists what was actually written this run.
+
+- shippedActions: pull from seo_work_log entries created today (typically empty in a generation-first run unless yesterday's approvals have been executed).
+- newProposals: pull from approval_requests created today with status='pending'. THIS IS THE PRIMARY OUTPUT OF THE RUN. Lead the TL;DR with this count.
+- newOpportunities: pull from seo_opportunities created today.
+- awaitingApproval: pull from approval_requests where status='pending'.
+
+The TL;DR should lead with what the agent produced ("Drafted 3 new pages for review, surfaced 4 backlink opportunities, snapshotted today's metrics") rather than what wasn't ("Today had no material activity").
+
+If the specialist genuinely produced ZERO approvals AND ZERO opportunities:
+- Frame it as a PROBLEM to flag, not a quiet day. ("Daily run produced no new work. Possible causes: integration unavailability (DataForSEO, Framer), scope-locked tenant, or specialist budget exhaustion. Operator should investigate.")
+- Do NOT pad the report. Do NOT invent opportunities. Do NOT restate past work.
+- The operator should see this as a failed run that needs investigation.
+
+If a specialist's output starts with "⚠️ HALLUCINATION DETECTED", exclude every write claim that isn't backed by a Verified DB writes row.
+
+# Legacy quiet-day handling (rare)
+
+If a "## Prior-day comparison" block reports "Today had NO material activity" AND the specialist genuinely couldn't produce anything (no approvals filed, no opportunities found, integrations unavailable), THEN say so plainly in one TL;DR bullet. Do NOT pad. The operator trusts honest "no work generated" reports more than padded ones — but this should be the exception in a generation-first cron, not the norm.`
 }
 
 function buildWeeklySystem(tenant: TenantConfig): string {
