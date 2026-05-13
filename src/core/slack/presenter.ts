@@ -25,11 +25,15 @@ import type { Logger } from 'winston';
 import {
   RunState, RunPhase, SpecialistEntry, RunNotFoundError,
   StartRunInput, ApprovalRequestInput, ApprovalResolvedInput, BudgetWarningInput,
+  ExecutionResultInput,
+  PendingNudgeInput,
 } from './types';
 import {
   renderAnchor, renderSpecialistComplete, renderSpecialistFailed,
   renderApprovalRequest, renderApprovalResolved,
   renderBudgetWarning,
+  renderExecutionResult,
+  renderPendingNudge,
 } from './render';
 import {
   createRun, getRun, mutateRunState, RunRow,
@@ -285,6 +289,54 @@ export class SlackPresenter {
       tenantId: input.tenantId, taskId: input.taskId,
       tool: input.toolName, decision: input.decision,
     });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Execution result — Task 0.5.1: posted after the executor worker runs
+  // ──────────────────────────────────────────────────────────────────────
+  //
+  // Called by the execution worker after dispatching an approved action.
+  // Closes the loop after Approve — operator sees what actually shipped
+  // (or what failed). Without this, the experience is: Approve → static
+  // "Approved by X" card → silence.
+  //
+  // Non-threaded so the operator definitely sees it in the channel feed.
+  // Best-effort: failures are logged but don't propagate (the underlying
+  // execution_jobs row + approval_requests.executed_outcome are
+  // authoritative for state — this is just the UX surface).
+
+  async notifyExecutionResult(input: ExecutionResultInput): Promise<void> {
+    try {
+      await this.postChannel(input.tenantId, input.channelId, renderExecutionResult(input));
+      this.logger.info('slack_execution_result_posted', {
+        tenantId: input.tenantId, taskId: input.taskId,
+        approvalId: input.approvalId, ok: input.ok,
+      });
+    } catch (err) {
+      this.logger.warn('slack_execution_result_post_failed', {
+        tenantId: input.tenantId, approvalId: input.approvalId,
+        err: String(err).slice(0, 200),
+      });
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Pending nudge — Task 0.5.1: daily scanner sends a single reminder per
+  // tenant with approvals pending past the threshold.
+  // ──────────────────────────────────────────────────────────────────────
+
+  async notifyPendingNudge(input: PendingNudgeInput): Promise<void> {
+    try {
+      await this.postChannel(input.tenantId, input.channelId, renderPendingNudge(input));
+      this.logger.info('slack_pending_nudge_posted', {
+        tenantId: input.tenantId, pendingCount: input.pendingCount,
+        oldestDaysAgo: input.oldestDaysAgo,
+      });
+    } catch (err) {
+      this.logger.warn('slack_pending_nudge_post_failed', {
+        tenantId: input.tenantId, err: String(err).slice(0, 200),
+      });
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@
 import { pool } from './postgres'
 import { logger } from '../logger'
 
-export type TaskIntent = 'investigate' | 'propose_changes' | 'execute_approved' | 'daily_generation'
+export type TaskIntent = 'investigate' | 'propose_changes' | 'execute_approved' | 'daily_generation' | 'weekly_audit' | 'weekly_digest'
 
 export interface SubTask {
   id:              string

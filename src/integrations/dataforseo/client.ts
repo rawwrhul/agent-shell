@@ -182,3 +182,41 @@ export async function keywordOverview(
   }])
   return r.tasks?.[0]?.result?.[0]?.items ?? []
 }
+
+// ── Competitor research (Task 0.5.1) ────────────────────────────────────
+//
+// DataForSEO's competitors-domain endpoint returns the top domains that
+// rank for the same keywords as a target domain, weighted by overlap.
+// Useful as a first call in the daily-generation cron when the tenant
+// hasn't seeded an explicit competitor_domains list.
+
+export interface CompetitorDomainItem {
+  /** Domain name (e.g. "agriworkers.com.au") */
+  domain:                   string
+  /** Keyword count both domains rank for */
+  intersections:            number
+  /** Total keywords this competitor ranks for */
+  full_domain_metrics_count?: number
+  /** Average position of this competitor across overlapping keywords */
+  avg_position?:            number
+  /** Estimated organic traffic of this competitor */
+  median_position?:         number
+  /** SE traffic estimate (DataForSEO's number, take with grain of salt) */
+  etv?:                     number
+}
+
+export async function competitorsDomain(
+  tenant: TenantConfig,
+  args:   { target: string; limit?: number; locationCode?: number; languageCode?: string },
+): Promise<CompetitorDomainItem[]> {
+  type R = { tasks?: Array<{ result?: Array<{ items?: CompetitorDomainItem[] }> }> }
+  const r = await call<R>(tenant, '/v3/dataforseo_labs/google/competitors_domain/live', [{
+    target:         args.target,
+    location_code:  args.locationCode ?? 2036,    // 2036 = Australia
+    language_code:  args.languageCode ?? 'en',
+    limit:          args.limit ?? 10,
+    exclude_top_domains: true,                     // skip Wikipedia / news / generic
+  }])
+  return r.tasks?.[0]?.result?.[0]?.items ?? []
+}
+

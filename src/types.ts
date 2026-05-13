@@ -22,6 +22,7 @@ export type TaskTrigger =
   | 'slack-command'
   | 'cron-daily'
   | 'cron-weekly'
+  | 'cron-end-of-week'
   | 'manual'
 
 export interface AgentTask {

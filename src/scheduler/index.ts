@@ -47,7 +47,42 @@ export async function bootstrapSchedules(): Promise<void> {
       });
     });
   }
+
+  // Task 0.5.1: register the global pending-nudge scan as a separate
+  // repeatable job. Fires once daily at 11 AM (operator's local TZ —
+  // approximate; we use Sydney since that's the primary tenant). The
+  // scan checks every tenant in one pass and posts at most one nudge
+  // per tenant per cooldown window.
+  await registerPendingNudgeScan().catch(err => {
+    logger.error('pending_nudge_register_failed', { err: String(err) });
+  });
+
   logger.info('scheduler_bootstrapped', { count: schedules.length });
+}
+
+async function registerPendingNudgeScan(): Promise<void> {
+  const jobId = 'global:pending-nudge-scan';
+  const repeatOpts: RepeatOptions = {
+    pattern: '0 11 * * *',          // 11:00 every day
+    tz:      'Australia/Sydney',
+  };
+
+  await removeRepeatableByPattern(jobId, repeatOpts);
+
+  await queue().add(
+    'pending-nudge-scan',
+    // Reuse ScheduledRunPayload shape with sentinel values to satisfy
+    // the worker's type signature; the worker dispatches on job.name
+    // rather than payload contents for this job type.
+    {
+      tenantId:   '_global_',
+      runKind:    'daily' as RunKind,
+      triggerAt:  '',
+      scheduleId: jobId,
+    },
+    { repeat: repeatOpts, jobId }
+  );
+  logger.info('pending_nudge_registered', { cron: repeatOpts.pattern, tz: repeatOpts.tz });
 }
 
 export async function upsertSchedule(input: {

@@ -45,6 +45,15 @@ export function startScheduleWorker(): Worker<ScheduledRunPayload> {
   _worker = new Worker<ScheduledRunPayload>(
     SCHEDULE_QUEUE_NAME,
     async (job: Job<ScheduledRunPayload>) => {
+      // Task 0.5.1: scheduler queue now multiplexes two job types.
+      //   - 'scheduled-run'      → per-tenant cron task (daily / weekly / end-of-week)
+      //   - 'pending-nudge-scan' → global daily scan for stale approvals
+      if (job.name === 'pending-nudge-scan') {
+        const { runPendingNudgeScan } = await import('./pending-nudge');
+        const result = await runPendingNudgeScan();
+        logger.info('pending_nudge_scan_done', result);
+        return;
+      }
       await processScheduledJob(job);
     },
     {
@@ -80,7 +89,11 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     return;
   }
 
-  const trigger: TaskTrigger = runKind === 'daily' ? 'cron-daily' : 'cron-weekly';
+  const trigger: TaskTrigger =
+    runKind === 'daily'        ? 'cron-daily'        :
+    runKind === 'weekly'       ? 'cron-weekly'       :
+    runKind === 'end-of-week'  ? 'cron-end-of-week'  :
+    'manual';
 
   const task = await enqueueTask({
     tenantId,
@@ -100,28 +113,47 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
 
 function buildPromptForRunKind(kind: RunKind, clientName: string): string {
   if (kind === 'daily') {
-    // GENERATION-FIRST daily prompt. The cron's job is to populate tomorrow's
-    // work pipeline, not to passively report state. The subagent's system
-    // prompt (when task_intent='daily_generation') expands on this with
-    // the four pillars (new pages, internal links, additive copy/meta,
-    // backlink opportunities) and the strict sequence.
-    return `Daily generation run for ${clientName}.
+    // GENERATION-FIRST: agent's job is to populate tomorrow's work pipeline,
+    // not to passively report state. The subagent's system prompt
+    // (task_intent='daily_generation') has the full playbook + writing-style
+    // guide. Keep the user-message short so it doesn't overshadow the system.
+    return `Morning generation run for ${clientName}. Find work for the operator to review.
 
-Your job today is to PRODUCE WORK so the operator wakes up to a queue of decisions. Snapshotting metrics is the last step, not the first.
+Produce 2-5 concrete changes the operator can approve, plus 3-5 leads for the backlog. Each "change" is something you've already drafted (with a previewable URL), not a vague recommendation. Each lead is a specific opportunity, not a generic suggestion.
 
-This run is FAILED if it produces zero new propose_action calls AND zero new seo_opportunities rows. Target output: 2-5 propose_action calls + 3-5 seo_opportunities entries across the four pillars (new pages, internal links, additive copy/meta, backlink opportunities).
+Areas to look at: pages worth writing that competitors rank for, internal-linking gaps between existing pages, additive copy or meta improvements on existing pages, and backlink opportunities from competitor analysis. Use what fits today — you don't have to hit every area.
 
-Sequence (strict):
-1. Research — DataForSEO + Framer + competitor analysis to gather raw material
-2. Ideate — match findings against the four pillars
-3. Draft — for pillars 1-3, create Framer drafts via framer_create_draft_page or framer_update_page_draft BEFORE filing propose_action; the previewUrl from those tools MUST be threaded into propose_action so the Slack approval card includes a clickable preview link
-4. File — propose_action for pillars 1-3 (with previewUrl), log_opportunity for pillar 4 (backlinks need human outreach, not a click)
-5. Snapshot — snapshot_metrics last, for the baseline
-6. Report — write findings to output.md, end with SPECIALIST_COMPLETE
-
-Before filing propose_action, query approval_requests and seo_work_log for the last 7 days to avoid proposing duplicates.`;
+Snapshot today's baseline metrics at some point so we have continuity for tomorrow.`;
   }
-  return `Weekly audit for ${clientName}. Produce a strategic state-of-play covering: ` +
-    `keyword movement, cluster progress vs targets, competitor activity, ` +
-    `risk flags, and the top 3 leverage moves for the coming week.`;
+
+  if (kind === 'weekly') {
+    // WEEKLY AUDIT: strategic state-of-play. The subagent's system prompt
+    // (task_intent='weekly_audit') frames this as the "what happened, what
+    // matters, what's next" briefing — not generation. Bigger token budget
+    // for deeper analysis.
+    return `Weekly strategic audit for ${clientName}. Look back, then look forward.
+
+Cover three things, in this order:
+
+1. What happened this week (shipped work, approved/rejected changes, ranking and traffic deltas, anything unexpected).
+2. What it means strategically (is ${clientName}'s position improving, holding, or eroding — vs competitors, vs their own targets, vs the broader category).
+3. The top 3 leverage moves for next week — specific enough that the operator can decide yes or no on each.
+
+Risks and red flags belong in section 2. Don't pad with generic recommendations; if the position is fine, say so.`;
+  }
+
+  if (kind === 'end-of-week') {
+    // END-OF-WEEK DIGEST: friday-afternoon celebration / momentum recap.
+    // Designed for the operator to share with their team. Less analytical
+    // than the audit, more "look what we did". The subagent's system prompt
+    // (task_intent='weekly_digest') has the conversational style guide.
+    return `End-of-week digest for ${clientName}. Recap the wins from this week.
+
+Lead with what shipped — be specific, name the pages and the changes, in plain English. Then surface 1-2 numbers that show momentum (rankings up, more pages indexed, traffic delta — whatever's actually moved). Close with a one-line outlook for next week.
+
+Tone is celebratory but honest. If the week was quiet, say so (one sentence). Don't manufacture wins; the operator will know.`;
+  }
+
+  // Fallback (unreachable with current RunKind, but TS exhaustiveness).
+  return `Scheduled run for ${clientName}. Look at the live state and surface what's worth the operator's attention.`;
 }
