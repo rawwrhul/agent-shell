@@ -154,18 +154,17 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
     description:
       "Create a HITL approval request for any action that touches the public site or sends external " +
       "messages. DOES NOT execute — only files the request. " +
-      "When the action is a Framer page change you've already drafted via framer_create_draft_page or " +
-      "framer_update_page_draft, pass the previewUrl through — the Slack approval card renders it as a " +
-      "'View preview ↗' link the operator can click before approving.\n\n" +
+      "When the action is a Framer blog post you've already drafted via framer_draft_blog_post, the " +
+      "tool's response includes a `next_step` string — it tells you exactly what toolName and " +
+      "toolInput to pass here. Copy them verbatim.\n\n" +
       "REQUIRED toolInput shapes for known toolNames (the executor will reject malformed input):\n\n" +
-      "  • framer_update_page_seo — { pageId: <string>, title?: <string>, description?: <string>, " +
-      "ogTitle?: <string>, ogDescription?: <string>, ogImage?: <string>, robots?: <string> }. " +
-      "Get pageId by calling framer_list_pages first; include only the fields you're changing.\n\n" +
-      "  • framer_publish_page — { pageId: <string> }. Publish-only path, no field updates. Use after " +
-      "framer_update_page_draft when the operator approves shipping the draft.\n\n" +
-      "  • framer_create_draft_page — { path: <string>, title: <string>, contentBlocks: <array> }. " +
-      "Use only when proposing a brand-new page (you would normally already have called " +
-      "framer_create_draft_page directly to get the previewUrl, then propose_action just for the publish step).\n\n" +
+      "  • framer_confirm_publish — { confirmationHash: <string>, itemId: <string>, slug: <string>, " +
+      "title: <string> }. Publishes a previewed blog post to production (tarino.au). The " +
+      "confirmationHash and itemId come from a prior framer_draft_blog_post call. slug and title are " +
+      "for the approval card display.\n\n" +
+      "  • framer_rollback_draft — { itemId: <string>, slug?: <string> }. Removes a draft CMS " +
+      "item from Framer. Use when a draft will not be published (operator rejected, dupe slug " +
+      "discovered, etc.).\n\n" +
       "If you're unsure of the shape, look up the corresponding integration tool's input_schema for " +
       "guidance — propose_action's toolInput is forwarded verbatim to the executor.",
     input_schema: {
@@ -182,9 +181,10 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
           type: 'string',
           description:
             "Optional URL the operator can click to preview the change before approving. " +
-            "For Framer page drafts, pass the previewUrl returned by framer_create_draft_page " +
-            "or framer_update_page_draft. The Slack approval card renders this as a clickable " +
-            "'View preview ↗' link.",
+            "For framer_confirm_publish: there is no staging preview (Framer's publish pushes to all " +
+            "custom hostnames simultaneously), so set this to the production URL the post will appear " +
+            "at — https://tarino.au/blog/<slug>. The Slack approval card renders this as a clickable " +
+            "'View preview ↗' link the operator can use to verify after approval.",
         },
       },
       required: ['toolName', 'toolInput', 'proposedAction', 'priority'],

@@ -173,14 +173,10 @@ export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMess
  */
 function inferActionKind(toolName: string): import('./blocks/approval').ApprovalActionKind {
   const n = toolName.toLowerCase()
-  // Framer page operations + GSC submission = publishing content
-  if (n.startsWith('framer_create_draft_page')) return 'publish_content'
-  if (n.startsWith('framer_update_page_draft')) return 'publish_content'
-  if (n.startsWith('framer_publish'))            return 'publish_content'
-  if (n.startsWith('framer_deploy'))             return 'publish_content'
-  if (n.startsWith('framer_update_page_seo'))    return 'modify_live_page'
-  if (n.startsWith('framer_update_cms'))         return 'modify_live_page'
-  if (n.startsWith('framer_'))                   return 'modify_live_page'
+  // Framer (two-phase blog publish via framer_draft_blog_post + framer_confirm_publish)
+  if (n.startsWith('framer_confirm_publish')) return 'publish_content'
+  if (n.startsWith('framer_rollback_draft'))  return 'commit_data_change'
+  if (n.startsWith('framer_'))                return 'modify_live_page'
   if (n.startsWith('gsc_submit') || n.startsWith('gsc_request')) return 'publish_content'
   // Outreach-type
   if (n.startsWith('email_') || n.startsWith('send_') || n.startsWith('slack_post'))

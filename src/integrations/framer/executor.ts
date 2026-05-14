@@ -1,158 +1,106 @@
 // src/integrations/framer/executor.ts
 //
-// Handlers for approved Framer actions. The execution worker dispatches here.
+// Handlers for approved Framer actions. The execution worker dispatches here
+// via src/execution/dispatcher.ts.
+//
+// Two executors:
+//   - execFramerConfirmPublish — commits a preview using its confirmationHash
+//   - execFramerRollbackDraft  — removes a draft CMS item (cleanup)
+//
+// The "draft + preview" step is NOT an executor — it's a tool the agent
+// invokes directly (see tools.ts: framer_draft_blog_post). The agent calls
+// it during reasoning, gets back {itemId, confirmationHash, ...}, and then
+// files a propose_action with toolName='framer_confirm_publish' and toolInput
+// containing the hash + itemId (for display + potential rollback).
 //
 // Each handler:
-//   - Loads the per-tenant Framer credentials (handled by the client wrapper)
+//   - Loads tenant + credential via the client wrapper
 //   - Performs the operation
-//   - Returns an ExecutionResult
-//   - Never throws — errors get caught and surfaced as ok:false
+//   - Returns an ExecutionResult (never throws — errors become ok:false)
 
 import * as fr from './client'
 import { logger } from '../../logger'
 import type { IntegrationContext, ExecutionResult } from '../types'
 
-interface UpdatePageSeoInput {
-  pageId:        string
-  title?:        string
-  description?:  string
-  ogTitle?:      string
-  ogDescription?:string
-  ogImage?:      string
-  robots?:       string
-  publish?:      boolean   // if true, immediately publish to preview after the update
-  deploy?:       boolean   // if true AND publish === true, also deploy preview to production
+// ── framer_confirm_publish ─────────────────────────────────────────────────
+
+export interface ConfirmPublishInput {
+  confirmationHash: string
+  itemId?:          string   // for display + rollback if confirm fails
+  slug?:            string   // for human-readable summary
+  title?:           string   // for human-readable summary
 }
 
-export async function execFramerUpdatePageSeo(
-  input: UpdatePageSeoInput,
+export async function execFramerConfirmPublish(
+  input: ConfirmPublishInput,
   ctx:   IntegrationContext,
 ): Promise<ExecutionResult> {
   try {
-    const { pageId, publish: shouldPublish, deploy: shouldDeploy, ...updateFields } = input
-    if (!pageId) {
-      return { ok: false, summary: 'pageId is required', error: 'missing pageId' }
+    if (!input.confirmationHash) {
+      return { ok: false, summary: 'confirmationHash is required', error: 'missing confirmationHash' }
     }
 
-    const updateResult = await fr.updatePageSeo(ctx.tenant, pageId, updateFields)
-    logger.info('exec_framer_update_seo', { tenantId: ctx.tenant.tenantId, pageId, taskId: ctx.taskId })
+    const result = await fr.confirmPublish(ctx.tenant, input.confirmationHash)
+    logger.info('exec_framer_confirm_publish', {
+      tenantId:     ctx.tenant.tenantId,
+      taskId:       ctx.taskId,
+      approvalId:   ctx.approvalId,
+      deploymentId: result.deployment?.id,
+      slug:         input.slug,
+    })
 
-    const detail: Record<string, unknown> = { pageId, updated: updateFields, updateResult }
-
-    if (shouldPublish) {
-      const publishResult = await fr.publish(ctx.tenant)
-      detail.preview = publishResult
-      logger.info('exec_framer_publish', { tenantId: ctx.tenant.tenantId, deploymentId: publishResult.deployment.id, taskId: ctx.taskId })
-
-      if (shouldDeploy) {
-        const deployResult = await fr.deploy(ctx.tenant, publishResult.deployment.id)
-        detail.deploy = deployResult
-        logger.info('exec_framer_deploy', { tenantId: ctx.tenant.tenantId, deploymentId: publishResult.deployment.id, taskId: ctx.taskId })
-      }
-    }
+    const productionHost = result.hostnames?.find(h => h.type === 'custom' && h.isPublished)?.hostname
+    const summary = input.title
+      ? `Published "${input.title}" to ${productionHost ?? 'production'}`
+      : `Published deployment ${result.deployment?.id ?? '(unknown)'} to ${productionHost ?? 'production'}`
 
     return {
-      ok: true,
-      summary: shouldDeploy
-        ? `Updated SEO on ${pageId} and deployed to production`
-        : shouldPublish
-        ? `Updated SEO on ${pageId} and published preview`
-        : `Updated SEO on ${pageId} (not yet published)`,
-      detail,
+      ok:      true,
+      summary,
+      detail:  {
+        ...input,
+        result,
+        productionUrl: productionHost ? `https://${productionHost}/${input.slug ?? ''}` : undefined,
+      },
     }
   } catch (err) {
-    return { ok: false, summary: 'Framer SEO update failed', error: String(err).slice(0, 500) }
+    return { ok: false, summary: 'Framer confirm_publish failed', error: String(err).slice(0, 500) }
   }
 }
 
-interface PublishPreviewInput {
-  // No inputs — operates on current unpublished state
+// ── framer_rollback_draft ──────────────────────────────────────────────────
+
+export interface RollbackDraftInput {
+  itemId: string
+  slug?:  string   // for the summary line
 }
 
-export async function execFramerPublishPreview(
-  _input: PublishPreviewInput,
+export async function execFramerRollbackDraft(
+  input: RollbackDraftInput,
   ctx:   IntegrationContext,
 ): Promise<ExecutionResult> {
   try {
-    const result = await fr.publish(ctx.tenant)
+    if (!input.itemId) {
+      return { ok: false, summary: 'itemId is required', error: 'missing itemId' }
+    }
+
+    await fr.removeBlogPost(ctx.tenant, input.itemId)
+    logger.info('exec_framer_rollback_draft', {
+      tenantId:   ctx.tenant.tenantId,
+      taskId:     ctx.taskId,
+      approvalId: ctx.approvalId,
+      itemId:     input.itemId,
+      slug:       input.slug,
+    })
+
     return {
-      ok: true,
-      summary: `Published preview (deployment ${result.deployment.id})`,
-      detail: result as unknown as Record<string, unknown>,
+      ok:      true,
+      summary: input.slug
+        ? `Removed draft "${input.slug}" from Blog`
+        : `Removed draft item ${input.itemId} from Blog`,
+      detail:  { ...input, rolledBack: true },
     }
   } catch (err) {
-    return { ok: false, summary: 'Framer publish failed', error: String(err).slice(0, 500) }
-  }
-}
-
-interface DeployProductionInput {
-  deploymentId: string
-}
-
-export async function execFramerDeployProduction(
-  input: DeployProductionInput,
-  ctx:   IntegrationContext,
-): Promise<ExecutionResult> {
-  try {
-    if (!input.deploymentId) {
-      return { ok: false, summary: 'deploymentId is required', error: 'missing deploymentId' }
-    }
-    const result = await fr.deploy(ctx.tenant, input.deploymentId)
-    return {
-      ok: true,
-      summary: `Deployed ${input.deploymentId} to production`,
-      detail: { deploymentId: input.deploymentId, result },
-    }
-  } catch (err) {
-    return { ok: false, summary: 'Framer deploy failed', error: String(err).slice(0, 500) }
-  }
-}
-
-interface UpdateCmsItemInput {
-  collectionId: string
-  itemId:       string
-  fields:       Record<string, unknown>
-}
-
-export async function execFramerUpdateCmsItem(
-  input: UpdateCmsItemInput,
-  ctx:   IntegrationContext,
-): Promise<ExecutionResult> {
-  try {
-    if (!input.collectionId || !input.itemId) {
-      return { ok: false, summary: 'collectionId and itemId required', error: 'missing required fields' }
-    }
-    const result = await fr.updateCmsItem(ctx.tenant, input.collectionId, input.itemId, input.fields ?? {})
-    return {
-      ok: true,
-      summary: `Updated CMS item ${input.itemId} in ${input.collectionId}`,
-      detail: { ...input, result },
-    }
-  } catch (err) {
-    return { ok: false, summary: 'Framer CMS update failed', error: String(err).slice(0, 500) }
-  }
-}
-
-interface CreateCmsItemInput {
-  collectionId: string
-  fields:       Record<string, unknown>
-}
-
-export async function execFramerCreateCmsItem(
-  input: CreateCmsItemInput,
-  ctx:   IntegrationContext,
-): Promise<ExecutionResult> {
-  try {
-    if (!input.collectionId) {
-      return { ok: false, summary: 'collectionId is required', error: 'missing collectionId' }
-    }
-    const result = await fr.createCmsItem(ctx.tenant, input.collectionId, { fields: input.fields ?? {} })
-    return {
-      ok: true,
-      summary: `Created CMS item in ${input.collectionId}`,
-      detail: { ...input, result },
-    }
-  } catch (err) {
-    return { ok: false, summary: 'Framer CMS create failed', error: String(err).slice(0, 500) }
+    return { ok: false, summary: 'Framer rollback failed', error: String(err).slice(0, 500) }
   }
 }

@@ -4,28 +4,27 @@
 
 import type { IntegrationContext, ExecutionResult } from '../integrations/types'
 import {
-  execFramerUpdatePageSeo,
-  execFramerPublishPreview,
-  execFramerDeployProduction,
-  execFramerUpdateCmsItem,
-  execFramerCreateCmsItem,
+  execFramerConfirmPublish,
+  execFramerRollbackDraft,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
 // Map of tool_name → handler.
 // When the agent proposes an action via `propose_action`, the toolName field on
-// the approval determines which handler executes. The handler signature is
-// uniform: (input, ctx) → ExecutionResult.
+// the approval determines which handler executes. Handler signature is uniform:
+// (input, ctx) → ExecutionResult.
 const HANDLERS: Record<
   string,
   (input: Record<string, unknown>, ctx: IntegrationContext) => Promise<ExecutionResult>
 > = {
-  // Framer
-  'framer_update_page_seo':    (i, c) => execFramerUpdatePageSeo(i as unknown as Parameters<typeof execFramerUpdatePageSeo>[0], c),
-  'framer_publish_preview':    (i, c) => execFramerPublishPreview(i as unknown as Parameters<typeof execFramerPublishPreview>[0], c),
-  'framer_deploy_production':  (i, c) => execFramerDeployProduction(i as unknown as Parameters<typeof execFramerDeployProduction>[0], c),
-  'framer_update_cms_item':    (i, c) => execFramerUpdateCmsItem(i as unknown as Parameters<typeof execFramerUpdateCmsItem>[0], c),
-  'framer_create_cms_item':    (i, c) => execFramerCreateCmsItem(i as unknown as Parameters<typeof execFramerCreateCmsItem>[0], c),
+  // Framer — two-phase commit:
+  //   1) Agent calls framer_draft_blog_post (a tool, not an executor) which
+  //      creates the CMS item and returns a confirmationHash.
+  //   2) Agent files propose_action with toolName='framer_confirm_publish'.
+  //   3) Operator approves → this executor commits to production.
+  //   4) Rejection / cleanup → framer_rollback_draft removes the draft item.
+  'framer_confirm_publish':    (i, c) => execFramerConfirmPublish(i as unknown as Parameters<typeof execFramerConfirmPublish>[0], c),
+  'framer_rollback_draft':     (i, c) => execFramerRollbackDraft(i as unknown as Parameters<typeof execFramerRollbackDraft>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),
