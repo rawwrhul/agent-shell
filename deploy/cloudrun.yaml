@@ -55,6 +55,9 @@ spec:
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef: { name: redis-url, key: latest }
+            - name: CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: { name: credential-encryption-key, key: latest }
             - name: SKILLS_DIR
               value: ./skills
             - name: PROGRESS_DIR
