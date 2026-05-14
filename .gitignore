@@ -5,3 +5,4 @@ dist/
 agent-progress/
 *.log
 .DS_Store
+.env.framer.local

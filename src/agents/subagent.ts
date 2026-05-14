@@ -606,11 +606,11 @@ A run that produces zero approvals AND zero opportunities is a failed run, not a
 
 These are the kinds of decisions worth surfacing. Use what fits today — don't force a tick on every area.
 
-**New pages.** What does ${tenant.clientName} not have a page for, that competitors do? Use DataForSEO keyword data and competitor sitemaps to find the gap. If you spot a clear winner, draft the page in Framer (framer_create_draft_page) and surface the preview URL via propose_action.
+**New blog posts.** What is ${tenant.clientName} not writing about, that competitors are? Use DataForSEO keyword data and competitor sitemaps to find topic gaps with commercial intent. If you spot a clear winner, draft it as a blog post via framer_draft_blog_post (creates the CMS item AND runs the publish preview in one call). Then file propose_action using the next_step string the tool returns. NEW LANDING PAGES are NOT yet supported by the Framer API surface — if a gap genuinely calls for a new page (not a blog post), log it as a seo_opportunities entry with the proposed page outline and let the operator build it in Framer's UI.
 
-**Internal links between existing pages.** Two pages that obviously belong linked but aren't. Push a draft revision of the source page (framer_update_page_draft) and propose_action with the preview.
+**Internal links between existing pages.** Two pages that obviously belong linked but aren't. The Framer Server API can't edit existing page content programmatically today, so log these as seo_opportunities (log_opportunity) with the specific source page, target page, and proposed anchor text. The operator implements them in Framer's UI directly.
 
-**Additive copy or meta on existing pages.** Strictly additive — never propose removing or replacing existing copy. New FAQ section, an additional paragraph that closes a gap, an expanded meta description. Draft revision + propose_action.
+**Additive copy or meta on existing pages.** Same constraint as internal links: no programmatic page edits via the current Framer API surface. Log specific proposals to seo_opportunities (with the exact copy, the placement, and the why) for operator-driven implementation. New FAQ sections, expanded meta descriptions, additional paragraphs that close a gap — all valuable; just not agent-shippable yet.
 
 **Backlink leads from competitor analysis.** Use dataforseo_backlinks_summary to find domains linking to competitors but not to ${tenant.clientName}. These go to seo_opportunities (log_opportunity) — backlinks need human outreach, not a click-to-approve.
 
@@ -660,9 +660,17 @@ Before filing a propose_action or log_opportunity, quickly check approval_reques
 
 **Learn from past runs.** Call query_memory with type='learning' early in the run — the weekly audit writes retrospective findings here (keys prefixed 'retro-') about what kinds of changes have actually moved the needle for ${tenant.clientName} in the past. If past data shows (for example) that title-rewrites for /service-pages moved rankings 3+ spots, lean into more of that. If it shows that schema additions did nothing, deprioritise those. The retrospective memories are how the agent gets smarter over time — don't ignore them.
 
-## On Framer drafts
+## On Framer blog posts
 
-If framer_create_draft_page returns a previewUrl that looks like a regular live URL (no staging prefix), the workspace plan doesn't support native drafts and the page was created as live-but-noindex'd. That still works — the operator clicks through, sees the rendered page, Google won't index it, and approval removes the noindex. Mention "preview" in the proposedAction either way; the operator doesn't need to know which mode.
+To propose a new blog post:
+
+1. Call framer_get_changed_paths first. If it shows any pending changes in the workspace, STOP — surface the situation to the operator rather than proceeding. Publishing would bundle those changes with your post.
+2. Call framer_list_blog_items to confirm your proposed slug is unique and to study the existing post style and topic mix.
+3. Call framer_draft_blog_post with { slug, title, content }. Content is HTML in Framer's formattedText format (<p dir="auto">, <h2>, <strong>, <ul>, <li>, etc.). The tool creates the CMS item AND runs the publish preview in one shot.
+4. The response includes a "next_step" string — it tells you exactly what to put in propose_action. Copy the toolName and toolInput verbatim.
+5. On approval, the post goes live at https://tarino.au/blog/<slug>. On rejection (or if the operator never decides), the draft sits as an unpublished CMS item in Framer. framer_rollback_draft can clean it up later if needed.
+
+NOT supported by the current Framer API surface: editing existing pages, changing SEO meta on pages, creating new landing pages. For those, log a seo_opportunities entry with the specific proposal and let the operator implement in Framer's UI.
 `
     : `# Task mode: PROPOSE CHANGES (can file approvals)
 
