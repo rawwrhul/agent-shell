@@ -75,6 +75,12 @@ const MAX_API_RETRIES = 3
 const RETRY_BASE_DELAY_MS = 1000
 const PER_CALL_TIMEOUT_MS = 90_000
 
+// Phase 8.5: wall-clock + token enforcement per specialist run.
+// Caps both runaway loops and unbounded research. Tenant.tokenBudgetPerRun
+// is the soft ceiling per specialist; if it overruns we break out with a
+// graceful summary rather than letting the loop continue burning credits.
+const MAX_SPECIALIST_DURATION_MS = 8 * 60 * 1000   // 8 minutes hard ceiling
+
 const TRANSIENT_ERROR_CODES = new Set([
   'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND', 'ECONNREFUSED',
 ])
@@ -270,9 +276,25 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   const iterationCap = Math.min(config.AGENT_MAX_TURNS ?? budgets.iterationCap, budgets.iterationCap)
 
   try {
+    const startedAt = Date.now()
     let turns = 0
+    let budgetExhausted: string | null = null
     while (turns < iterationCap) {
       turns++
+
+      // Phase 8.5: wall-clock check (before API call so we don't burn one)
+      const elapsedMs = Date.now() - startedAt
+      if (elapsedMs > MAX_SPECIALIST_DURATION_MS) {
+        budgetExhausted = `wall-clock ${Math.round(elapsedMs / 1000)}s exceeded cap ${MAX_SPECIALIST_DURATION_MS / 1000}s`
+        logger.warn('subagent_budget_wall_clock', { taskId: task.id, subTaskId, elapsedMs, turns })
+        break
+      }
+      // Phase 8.5: token-budget check (tenant-configured ceiling)
+      if (tenant.tokenBudgetPerRun && tokenCount >= tenant.tokenBudgetPerRun) {
+        budgetExhausted = `token budget ${tokenCount}/${tenant.tokenBudgetPerRun} exceeded`
+        logger.warn('subagent_budget_tokens', { taskId: task.id, subTaskId, tokenCount, budget: tenant.tokenBudgetPerRun, turns })
+        break
+      }
 
       const response = await callAnthropicWithRetry({
         model:      tenant.agentModel,
@@ -371,6 +393,11 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         messages.push({ role: 'assistant', content: response.content })
         messages.push({ role: 'user', content: results })
       }
+    }
+
+    if (budgetExhausted && !finalOutput) {
+      finalOutput = `Run stopped early — ${budgetExhausted}. Partial work may be in run_scratchpad / approval_requests for review. No further proposals filed in this run.`
+      logger.info('subagent_budget_stop_synthesised', { taskId: task.id, subTaskId, reason: budgetExhausted })
     }
 
     if (turns >= iterationCap && !finalOutput) {
@@ -660,37 +687,60 @@ Before filing a propose_action or log_opportunity, quickly check approval_reques
 
 **Learn from past runs.** Call query_memory with type='learning' early in the run — the weekly audit writes retrospective findings here (keys prefixed 'retro-') about what kinds of changes have actually moved the needle for ${tenant.clientName} in the past. If past data shows (for example) that title-rewrites for /service-pages moved rankings 3+ spots, lean into more of that. If it shows that schema additions did nothing, deprioritise those. The retrospective memories are how the agent gets smarter over time — don't ignore them.
 
-## On Framer blog posts (two-stage approval, Phase 8)
+## On Framer blog posts (research-first, two-stage approval)
 
 Two operator-facing gates: PITCH (you propose; operator says is-this-worth-writing?) then PUBLISH (operator reviews the actual draft in Framer; says ship-it?). Both are propose_action calls — you only ever file one card per post. The second card is created by the executor on the operator's first approval.
 
-To propose a new blog post:
+CRITICAL: BEFORE proposing anything, ground the topic in TARINO'S actual performance data. A "content gap" is not an opportunity by itself — a topic that has search demand AND fits Tarino's commercial model AND is adjacent to content that's already working IS. Skipping the grounding step produces off-brand topics that waste the operator's time.
 
-1. Call framer_get_changed_paths first. If it shows any pending changes in the workspace, STOP — surface the situation to the operator rather than proceeding. Publishing would bundle those changes.
+Workflow:
 
-2. Call framer_list_blog_items. Two purposes:
-   (a) Confirm your proposed slug is unique.
-   (b) Pick 2-3 of the most recent posts and study them — they ARE the voice you write in. Mirror cadence, paragraph length, register, and structure. The tone is the operator's real voice; do not invent your own.
+### Phase A — Ground in Tarino's actual performance
 
-3. Write the post in full — title + slug + content. Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>, etc.
+A.1  Call query_memory with type='learning' early. Look for retro-* keys — past runs have written findings about what kinds of work moved the needle for this tenant. Use these as priors.
 
-4. Inside the body, embed 2-4 internal links to other Tarino posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="/resources/SLUG">descriptive anchor text</a> — use slugs from framer_list_blog_items. Anchor text should be a real noun phrase from the sentence.
+A.2  Call gsc_query_search_analytics with last 28 days, dimensions=['page', 'query'], rowLimit=200. Identify:
+     - The top 5 pages by clicks (what content is already winning)
+     - Top 20 queries by impressions where position is 4-15 (rankings within striking distance to improve)
+     - Themes across high-impression queries (what topics is the audience actually searching for)
 
-5. Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject — "australian small business owner laptop", "calculator paperwork desk", "warehouse logistics team". Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — that's the landscape-cropped URL.
+A.3  Call framer_list_blog_items. Read the titles + dates. Map each one onto a theme: which topics on the site already have proven traction (from A.2), which were written but didn't pull traffic, what's the editorial range.
 
-6. File propose_action ONCE with:
+A.4  Form a hypothesis: what topic, IF added to the site, would (a) build on a proven theme from A.2 rather than start a new one, (b) match the existing site's evident commercial lane (look at what existing posts SELL — who would click an outbound CTA?), and (c) target a query cluster with real intent.
+
+A.5  Validate the hypothesis with dataforseo_keyword_data on 3-5 candidate queries around your topic. You're looking for: AU search volume ≥ 50/month, CPC ≥ $2 (signals commercial intent), keyword difficulty ≤ 60. If your candidate fails all three, pick a different angle.
+
+If A.1–A.5 produces no candidate that passes, STOP and surface the situation to the operator rather than picking a weak topic. A blog post written for nobody is worse than no post.
+
+### Phase B — Write the post (only after A passes)
+
+B.1  Call framer_get_changed_paths. If pending changes exist, STOP — surface to operator. Publishing would bundle them.
+
+B.2  Re-read the 2-3 highest-traffic posts from A.2. They ARE the voice and structure you mirror. Cadence, paragraph length, register, how subheads work, whether posts close with a CTA or a thought. Do not invent a new tone.
+
+B.3  Write the post in full — title + slug + content. Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>. Headline should map to the validated query cluster from A.5.
+
+B.4  Embed 2-4 internal links to other Tarino posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="/resources/SLUG">descriptive anchor text</a> — anchor text is a real noun phrase from the sentence. Prefer linking to the existing high-traffic posts from A.2 (they're already ranking; pass authority).
+
+B.5  Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject — "australian small business owner laptop", "calculator paperwork desk", "warehouse logistics team". Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — landscape-cropped URL ready for Framer.
+
+### Phase C — File the pitch
+
+C.1  File propose_action ONCE with:
      toolName       = "approve_blog_pitch"
      toolInput      = { slug, title, content, imageUrl, whyThisTopic }
-     proposedAction = one-line plain-English pitch summary for the operator (this is what they read first)
+     proposedAction = one-line plain-English pitch summary for the operator
      priority       = P0 / P1 / P2 / P3
-     previewUrl     = the post-publish URL the operator can visit AFTER both approvals (https://tarino.au/resources/ followed by the slug). It will 404 until Stage 2 approve.
+     previewUrl     = https://tarino.au/resources/<slug> (will 404 until Stage 2 approve)
+     whyPriority    = grounding from Phase A — cite the GSC signal (e.g. "/<existing-page> ranks position 8 for [query] with 1,200 monthly impressions; this new post targets the upstream intent")
 
-What happens after:
-   - On Stage 1 approve (operator likes the pitch): executor creates the CMS draft in Framer (Title, Date, Content, Image fields filled), then posts a Stage 2 card in the same thread. The Stage 2 card links to Framer where the operator can review the actual rendered draft. Approving Stage 2 publishes to tarino.au.
-   - On Stage 1 reject: nothing is created in Framer. No cleanup needed.
-   - On Stage 2 reject: the draft is removed from Framer (rollback).
+C.2  What happens after:
+     - Stage 1 approve: executor creates Framer draft + posts Stage 2 card in the same thread.
+     - Stage 1 reject: nothing created. No cleanup.
+     - Stage 2 approve: publishes live to tarino.au. Operator reviews the rendered draft in Framer between Stage 1 and Stage 2.
+     - Stage 2 reject: rollback removes the draft.
 
-Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName \'framer_create_and_publish_blog_post\' (deprecated single-stage path). The draft creation happens server-side after Stage 1 approval — you only file the pitch.
+Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName 'framer_create_and_publish_blog_post' (deprecated). The draft creation happens server-side after Stage 1 approve — you only file the pitch.
 
 For non-blog work — schema markup, internal linking inside EXISTING posts, copy edits on live pages, meta tag updates, new landing pages — use propose_action with toolName="manual_operator_task". The instruction field should be detailed enough that the operator can do the work in Framer's editor without further input from you.
 `

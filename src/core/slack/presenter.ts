@@ -185,11 +185,13 @@ export class SlackPresenter {
     });
 
     if (!row) return;
-    const entry = row.state.specialists[type];
-    if (entry) {
-      await this.postThread(row.tenantId, row.channelId, row.anchorTs,
-        renderSpecialistComplete(entry));
-    }
+    // Phase 8.5: specialist completion thread post suppressed.
+    // The state mutation above already updates the anchor message's
+    // summary, so the operator sees the completion in the anchor's
+    // TL;DR. The thread-level Task Executor reply was duplicative
+    // technical noise — Approve/Reject cards belong in the thread,
+    // not bot status echoes.
+    void renderSpecialistComplete;  // silence unused-import lint
   }
 
   async recordSpecialistFailure(
