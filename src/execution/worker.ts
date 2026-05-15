@@ -17,7 +17,43 @@
 // Failures: BullMQ retries with exponential backoff. After max attempts, the
 // job is moved to the failed set and execution_jobs.status = 'failed'.
 
-import { Worker, Job } from 'bullmq'
+import { Worker, Job, UnrecoverableError } from 'bullmq'
+
+// ── Phase 9a: smart retries — classify deterministic vs transient errors ──
+//
+// BullMQ retries on every throw. For deterministic errors (schema validation,
+// missing fields, type mismatches) that won't resolve on retry, we throw
+// UnrecoverableError so BullMQ skips the remaining attempts. Saves time +
+// avoids 3x Slack failure noise on the same error.
+//
+// Transient errors (network, rate limit, socket timeout) still throw plain
+// Error and retry with exponential backoff as before.
+function classifyExecutionError(err: unknown): 'permanent' | 'transient' {
+  const msg = String(err).toLowerCase()
+  // Deterministic — won't change on retry
+  if (msg.includes('framerpluginerror'))   return 'permanent'
+  if (msg.includes('typia.createassert'))  return 'permanent'
+  if (msg.includes('expect to be'))        return 'permanent'    // schema validation
+  if (msg.includes('invalid type'))        return 'permanent'
+  if (msg.includes('not found') && msg.includes('field')) return 'permanent'
+  if (msg.includes('approval_id') && msg.includes('not exist'))  return 'permanent'
+  if (msg.includes('confirmation hash')) return 'permanent'
+  if (msg.includes('unique constraint')) return 'permanent'
+  if (msg.includes('foreign key'))       return 'permanent'
+  if (msg.includes('null value in column')) return 'permanent'
+  // Transient — retry is plausibly useful
+  if (msg.includes('econnreset'))        return 'transient'
+  if (msg.includes('etimedout'))         return 'transient'
+  if (msg.includes('rate limit'))        return 'transient'
+  if (msg.includes('rate_limit'))        return 'transient'
+  if (msg.includes('429'))               return 'transient'
+  if (msg.includes('503'))               return 'transient'
+  if (msg.includes('socket hang up'))    return 'transient'
+  if (msg.includes('network'))           return 'transient'
+  // Default: transient — let it retry, safer for unknowns
+  return 'transient'
+}
+
 import { Pool } from 'pg'
 import { createRedisConnection } from '../lib/redis'
 import { config } from '../config'
@@ -166,8 +202,16 @@ async function processJob(job: Job<ExecutionJobPayload>): Promise<void> {
     } catch (err) {
       logger.warn('presenter_notify_failed_on_failure', { taskId, approvalId, err: String(err).slice(0, 200) })
     }
-    // Surface as throw so BullMQ records the failed attempt for its retry logic
-    throw new Error(`Execution failed: ${result.summary} (${result.error ?? 'no error detail'})`)
+    // Phase 9a: classify before throwing. Deterministic errors (schema,
+    // validation, FramerPluginError) throw UnrecoverableError so BullMQ
+    // doesn't waste 2 more retries on a known-broken call.
+    const errorMessage = `Execution failed: ${result.summary} (${result.error ?? 'no error detail'})`
+    const kind = classifyExecutionError(result.error ?? result.summary)
+    if (kind === 'permanent') {
+      logger.warn('execution_unrecoverable', { taskId, approvalId, toolName, summary: result.summary })
+      throw new UnrecoverableError(errorMessage)
+    }
+    throw new Error(errorMessage)
   }
 }
 

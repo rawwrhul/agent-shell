@@ -239,9 +239,12 @@ function stripCodeFences(s: string): string {
 
 function expectedKindFor(trigger: TaskTrigger): FinalReport['kind'] {
   switch (trigger) {
-    case 'cron-daily':  return 'daily'
-    case 'cron-weekly': return 'weekly'
-    default:            return 'ad_hoc'
+    case 'cron-daily':   return 'daily'
+    case 'cron-weekly':  return 'weekly'
+    // Phase 9a: ad-hoc Slack-mention runs default to the tight response
+    // shape — single-task runs that produced an approval card don't need
+    // the full TL;DR/broken/working/leverage structure.
+    default:             return 'ad_hoc_tight'
   }
 }
 
@@ -257,6 +260,9 @@ function enrichWithIdentity(report: FinalReport, task: AgentTask, tenant: Tenant
   }
 
   if (report.kind === 'ad_hoc') {
+    return { ...report, ...base }
+  }
+  if (report.kind === 'ad_hoc_tight') {
     return { ...report, ...base }
   }
   if (report.kind === 'daily') {
@@ -284,6 +290,13 @@ function weekStart(d: Date): Date {
 }
 
 function validateMinimal(report: FinalReport): boolean {
+  // Phase 9a: ad_hoc_tight doesn't have tldr — handle separately.
+  if (report.kind === 'ad_hoc_tight') {
+    return typeof report.title   === 'string' && report.title.length   > 0
+        && typeof report.summary === 'string' && report.summary.length > 0
+        && typeof report.why     === 'string' && report.why.length     > 0
+  }
+
   if (!report.tldr || !Array.isArray(report.tldr) || report.tldr.length === 0) return false
 
   if (report.kind === 'ad_hoc') {
@@ -317,7 +330,58 @@ export function getAggregatorSystemPromptFor(trigger: TaskTrigger, tenant: Tenan
   }
 }
 
+// Phase 9a: tight ad-hoc system prompt — for single-task Slack-mention
+// runs where the meaningful output is the approval card, not a report.
 function buildAdHocSystem(tenant: TenantConfig): string {
+  return `You are the aggregator for ${tenant.clientName}'s ${tenant.agentType} agent, built by Causal Growth Science.
+
+You have just received the outputs of one or more specialists who worked on the operator's ad-hoc request. Most of the time this is a focused, single-task run (e.g. 'draft me a blog post') where the meaningful next step is already queued in the approval system. Your job is to produce a TIGHT summary, not a full report.
+
+# Who you're writing for
+
+${tenant.clientName}'s operator — they run the business. They asked for one thing; they want one tight answer plus the approval card already in the thread. Don't pad. Don't add a TL;DR if a single sentence covers it.
+
+Translate ALL technical concepts. NEVER use jargon. Common translations:
+- 'SERP' → 'search results'
+- 'CTR' → 'how often people click your listing'
+- 'meta description' → 'the summary under your title in search results'
+- 'meta title', 'title tag' → 'the headline in search results'
+- 'schema markup' → 'behind-the-scenes labels that help Google understand your page'
+- 'indexed' → 'showing up in Google'
+- 'backlinks' → 'links pointing to your site from other websites'
+
+# Output schema
+
+Output ONLY valid JSON matching this exact schema. No prose before or after. No markdown fences. No explanation. JSON only.
+
+{
+  "kind": "ad_hoc_tight",
+  "title": "<4-8 words, action-first. e.g. \"Drafted: Time zone objection post\", \"Audit complete: 3 issues\", \"Topic queued for review\"">,
+  "summary": "<one sentence, past tense, action-first — what got done in this run. 15-30 words. No jargon.>",
+  "why": "<one sentence — why this matters for the business. 12-25 words. Outcome-focused.>",
+  "notes": [
+    "<optional 0-2 short context bullets — only when genuinely useful. e.g. \"Existing post on /agency-markups got 340 impressions last 28 days — adjacent topic\". MOST runs leave this empty.>"
+  ]
+}
+
+# Voice and framing
+
+- First-person commitment, not directive. YES: "I drafted a post on...". NO: "A post has been drafted...".
+- Lead with the action, then the impact in the why line.
+- Plain prose. The Slack renderer handles emphasis.
+- Numbers and percentages where you have them — don't invent them.
+
+# Rules
+
+- title, summary, why are all MANDATORY.
+- notes is optional and usually empty. Only include when the operator would benefit from a concrete piece of context (a number, a comparison, a constraint).
+- NEVER produce broken/working/leverage fields. That schema is for cron daily/weekly reports, not ad-hoc.
+- If the specialist failed, set summary to a one-line failure description and why to a one-line on what the operator should do (file a bug, retry, etc.). Leave notes empty.
+`
+}
+
+function buildAdHocFullSystem(tenant: TenantConfig): string {
+  // Kept for legacy callers — produces the structured TL;DR/broken/working/leverage shape.
   return `You are the aggregator for ${tenant.clientName}'s ${tenant.agentType} agent, built by Causal Growth Science.
 
 You have just received the outputs of one or more specialist subagents who worked on a user's ad-hoc request. Synthesise their findings into a single structured report.

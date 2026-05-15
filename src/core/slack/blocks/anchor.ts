@@ -30,6 +30,7 @@ import {
 } from './shared';
 import type { FinalReport, RenderedMessage } from './types';
 import { renderAdHocCheck } from './ad-hoc-check';
+import { renderAdHocTight } from './ad-hoc-tight';
 import { renderDailyRun } from './daily-run';
 import { renderWeeklyAudit } from './weekly-audit';
 
@@ -150,6 +151,8 @@ function renderCompleteWithStructuredReport(
   switch (report.kind) {
     case 'ad_hoc':
       return renderAdHocCheck(report, { elapsedLabel, specialistCount });
+    case 'ad_hoc_tight':
+      return renderAdHocTight(report, { elapsedLabel, specialistCount });
     case 'daily':
       return renderDailyRun(report);
     case 'weekly':

@@ -178,4 +178,30 @@ export interface RiskFlag {
  * completes. The anchor renderer (renderAnchor) inspects `kind` and
  * delegates to the matching report renderer.
  */
-export type FinalReport = AdHocCheckReport | DailyRunReport | WeeklyAuditReport;
+// ── Phase 9a: Tight ad-hoc response shape ───────────────────────────
+//
+// Used for Slack-mention runs that produce a single, focused output (e.g.
+// "draft me a blog post"). Avoids the TL;DR/broken/working/leverage
+// structure that makes sense for daily reports but reads as clinical
+// overkill for a one-off task. The approval card carries the meaningful
+// next action — the anchor just needs a short summary and a 'why'.
+export interface AdHocTightReport {
+  kind: 'ad_hoc_tight';
+  tenantName: string;
+  tenantSlug: string;
+  runId: string;
+
+  /** Short title for the run. e.g. "Drafted: Time zone objection post". */
+  title: string;
+
+  /** One sentence — what got done. Past tense, action-first. */
+  summary: string;
+
+  /** One sentence — why this matters for the business. */
+  why: string;
+
+  /** 0-2 optional context bullets. Most runs leave this empty. */
+  notes?: string[];
+}
+
+export type FinalReport = AdHocCheckReport | AdHocTightReport | DailyRunReport | WeeklyAuditReport;

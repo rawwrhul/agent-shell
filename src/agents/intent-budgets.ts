@@ -24,7 +24,7 @@ import type { TaskIntent } from '../memory/subtasks'
  */
 export const ITERATION_CAPS: Record<TaskIntent, number> = {
   investigate:      15,
-  propose_changes:  15,
+  propose_changes:  25,
   execute_approved: 10,
   daily_generation: 20,
   weekly_audit:     20,   // bigger window: look across the week's deltas

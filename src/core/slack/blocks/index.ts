@@ -34,4 +34,5 @@ export { renderWeeklyAudit } from './weekly-audit';
 
 // ── R3 additions ────────────────────────────────────────────────────
 export { renderAdHocCheck } from './ad-hoc-check';
+export { renderAdHocTight } from './ad-hoc-tight';
 export type { AdHocCheckRenderContext } from './ad-hoc-check';
