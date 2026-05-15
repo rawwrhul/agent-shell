@@ -173,7 +173,12 @@ export function renderApprovalRequest(input: ApprovalRequestInput): RenderedMess
  */
 function inferActionKind(toolName: string): import('./blocks/approval').ApprovalActionKind {
   const n = toolName.toLowerCase()
-  // Framer (two-phase blog publish via framer_draft_blog_post + framer_confirm_publish)
+  // Phase 6: atomic create + publish path is the primary blog-post executor.
+  if (n === 'framer_create_and_publish_blog_post') return 'publish_content'
+  // Phase 6: manual operator tasks (schema, linking, copy edits) — operator does
+  // the actual change in Framer; on approve the executor just acknowledges.
+  if (n === 'manual_operator_task')                return 'modify_live_page'
+  // Legacy two-phase blog publish (kept for backwards compat).
   if (n.startsWith('framer_confirm_publish')) return 'publish_content'
   if (n.startsWith('framer_rollback_draft'))  return 'commit_data_change'
   if (n.startsWith('framer_'))                return 'modify_live_page'

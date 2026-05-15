@@ -153,20 +153,23 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
     name: 'propose_action',
     description:
       "Create a HITL approval request for any action that touches the public site or sends external " +
-      "messages. DOES NOT execute — only files the request. " +
-      "When the action is a Framer blog post you've already drafted via framer_draft_blog_post, the " +
-      "tool's response includes a `next_step` string — it tells you exactly what toolName and " +
-      "toolInput to pass here. Copy them verbatim.\n\n" +
-      "REQUIRED toolInput shapes for known toolNames (the executor will reject malformed input):\n\n" +
-      "  • framer_confirm_publish — { confirmationHash: <string>, itemId: <string>, slug: <string>, " +
-      "title: <string> }. Publishes a previewed blog post to production (tarino.au). The " +
-      "confirmationHash and itemId come from a prior framer_draft_blog_post call. slug and title are " +
-      "for the approval card display.\n\n" +
-      "  • framer_rollback_draft — { itemId: <string>, slug?: <string> }. Removes a draft CMS " +
-      "item from Framer. Use when a draft will not be published (operator rejected, dupe slug " +
-      "discovered, etc.).\n\n" +
-      "If you're unsure of the shape, look up the corresponding integration tool's input_schema for " +
-      "guidance — propose_action's toolInput is forwarded verbatim to the executor.",
+      "messages. Files the request — does NOT execute. The executor runs only after operator approval.\n\n" +
+      "You MUST set toolName to ONE of these registered executor names:\n\n" +
+      "  • framer_create_and_publish_blog_post — atomic create + publish of a NEW blog post on the Framer Blog. " +
+      "toolInput = { slug: <kebab-case string, becomes /blog/<slug>>, title: <string>, content: <HTML in Framer formattedText: <p dir=\"auto\">…</p>, <h2>, <strong>, <ul><li>, etc.>, imageUrl?: <optional hero image URL> }. " +
+      "Put the FULL post content in toolInput.content — no need to call framer_draft_blog_post first. " +
+      "On approve: executor creates the CMS item AND publishes the site in one atomic operation. " +
+      "On reject: no-op (nothing was created). " +
+      "Set previewUrl to https://tarino.au/blog/<slug> for the post-publish link (the operator clicks it after approving).\n\n" +
+      "  • manual_operator_task — for changes Framer's Server API can't do programmatically. " +
+      "Use this for schema markup pastes, internal linking edits, copy changes on existing pages, page-level SEO meta edits, new landing pages. " +
+      "toolInput = { instruction: <full step-by-step instructions including any JSON-LD / HTML / anchor-text strings the operator needs to paste, verbatim>, category?: <'schema' | 'linking' | 'copy' | 'meta' | 'new-page'> }. " +
+      "On approve: executor records acknowledgement. The actual change happens by the operator's hand in Framer's editor.\n\n" +
+      "  • framer_confirm_publish / framer_rollback_draft — LEGACY two-phase commit. Use ONLY if you have a confirmationHash from a prior framer_draft_blog_post call. " +
+      "For all NEW work, prefer framer_create_and_publish_blog_post.\n\n" +
+      "CRITICAL: toolName MUST be one of the four values listed above. Do NOT use the name of any agent-callable research tool " +
+      "(framer_draft_blog_post, framer_list_blog_items, framer_get_changed_paths, analyze_page, dataforseo_*, etc.). " +
+      "Those are not registered executors — the approval button will be a dead button if you do.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -405,6 +408,23 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
   let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
   try { tenant = await getTenant(ctx.tenantId); } catch { /* fall through with null */ }
   const effectiveChannelId = ctx.channelId ?? tenant?.slackChannelId ?? null;
+
+  // Phase 6: enrich whyPriority with a content preview for create-and-publish
+  // approvals, so the Slack card shows what's about to be published.
+  if (i.toolName === 'framer_create_and_publish_blog_post') {
+    const ti = i.toolInput as { title?: string; content?: string; slug?: string };
+    const stripped = (ti.content ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const excerpt = stripped.length > 600 ? stripped.slice(0, 600) + '…' : stripped;
+    const wordCount = stripped.split(/\s+/).filter(Boolean).length;
+    const meta = `*Draft preview — ${wordCount} words.*  Slug: \`${ti.slug ?? '(missing)'}\``;
+    i.whyPriority = `${i.whyPriority ?? ''}\n\n${meta}\n\n${excerpt}`.trim();
+  }
+  if (i.toolName === 'manual_operator_task') {
+    const ti = i.toolInput as { instruction?: string; category?: string };
+    const instr = (ti.instruction ?? '').slice(0, 1500);
+    const cat = ti.category ? ` [${ti.category}]` : '';
+    i.whyPriority = `${i.whyPriority ?? ''}\n\n*Operator task${cat}:*\n\n${instr}`.trim();
+  }
 
   // 1. Write to PG (operational state — required, agent polls this)
   const approval = await createApproval(pool(), {

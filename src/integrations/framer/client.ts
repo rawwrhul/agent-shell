@@ -310,3 +310,50 @@ export async function removeBlogPost(tenant: TenantConfig, itemId: string): Prom
     await blog.removeItems([itemId])
   })
 }
+
+// ── Atomic create + publish for a new blog post ─────────────────────────────
+//
+// Combines draftAndPreviewBlogPost (creates CMS item + gets confirmationHash)
+// with confirmPublish (commits the publish). Used by the
+// framer_create_and_publish_blog_post executor on approval.
+//
+// On failure between create and publish, the freshly-created item is rolled back
+// so we don't leave orphan drafts in the Blog collection.
+
+export interface CreateAndPublishResult {
+  itemId:        string
+  slug:          string
+  productionUrl: string
+  publishedAt:   string
+}
+
+export async function createAndPublishBlogPost(
+  tenant: TenantConfig,
+  input:  { slug: string; title: string; content: string; imageUrl?: string },
+): Promise<CreateAndPublishResult> {
+  const draft = await draftAndPreviewBlogPost(tenant, {
+    slug:    input.slug,
+    title:   input.title,
+    content: input.content,
+  })
+  let publish: ConfirmPublishResult
+  try {
+    publish = await confirmPublish(tenant, draft.preview.confirmationHash)
+  } catch (err) {
+    // Best-effort rollback so an interrupted publish doesn't leave cruft behind.
+    try { await removeBlogPost(tenant, draft.itemId) } catch { /* swallow */ }
+    throw err
+  }
+  const host = publish.hostnames?.find(h => h.type === 'custom' && h.isPublished)?.hostname
+            ?? (() => {
+                 try { return new URL(tenant.framer_project_url ?? '').hostname.replace(/^www\./, '') }
+                 catch { return undefined }
+               })()
+  return {
+    itemId:        draft.itemId,
+    slug:          input.slug,
+    productionUrl: host ? `https://${host}/blog/${input.slug}` : `/blog/${input.slug}`,
+    publishedAt:   new Date().toISOString(),
+  }
+}
+

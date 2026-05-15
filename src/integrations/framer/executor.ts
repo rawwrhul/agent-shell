@@ -104,3 +104,97 @@ export async function execFramerRollbackDraft(
     return { ok: false, summary: 'Framer rollback failed', error: String(err).slice(0, 500) }
   }
 }
+
+// ── framer_create_and_publish_blog_post ─────────────────────────────────────
+//
+// Atomic create + publish path. Filed via propose_action with the FULL post
+// content inline in toolInput. The approval card lets the operator review the
+// content before publishing. On approve, this executor creates the CMS item
+// AND publishes the site in one atomic operation — no orphan drafts on reject.
+
+export interface CreateAndPublishBlogPostInput {
+  slug:      string
+  title:     string
+  content:   string
+  imageUrl?: string
+}
+
+export async function execFramerCreateAndPublishBlogPost(
+  input: CreateAndPublishBlogPostInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.slug || !input.title || !input.content) {
+      return { ok: false, summary: 'slug, title, and content are required', error: 'missing required fields' }
+    }
+    const result = await fr.createAndPublishBlogPost(ctx.tenant, input)
+    logger.info('exec_framer_create_and_publish_blog_post', {
+      tenantId:   ctx.tenant.tenantId,
+      taskId:     ctx.taskId,
+      approvalId: ctx.approvalId,
+      itemId:     result.itemId,
+      slug:       result.slug,
+    })
+    return {
+      ok:      true,
+      summary: `Published "${input.title}" at ${result.productionUrl}`,
+      detail:  {
+        itemId:        result.itemId,
+        slug:          result.slug,
+        productionUrl: result.productionUrl,
+        publishedAt:   result.publishedAt,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: 'Failed to create + publish blog post',
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
+
+// ── manual_operator_task ────────────────────────────────────────────────────
+//
+// For work the operator does manually (schema markup pastes, internal linking
+// edits, copy tweaks). On approve, the executor records acknowledgement; the
+// actual change is the operator's manual action in Framer's editor afterwards.
+
+export interface ManualOperatorTaskInput {
+  instruction: string
+  category?:   string
+}
+
+export async function execManualOperatorTask(
+  input: ManualOperatorTaskInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.instruction) {
+      return { ok: false, summary: 'instruction is required', error: 'missing instruction' }
+    }
+    logger.info('exec_manual_operator_task', {
+      tenantId:   ctx.tenant.tenantId,
+      taskId:     ctx.taskId,
+      approvalId: ctx.approvalId,
+      category:   input.category ?? 'unspecified',
+    })
+    return {
+      ok:      true,
+      summary: input.category
+        ? `Acknowledged manual task (${input.category})`
+        : 'Acknowledged manual operator task',
+      detail:  {
+        acknowledgedAt: new Date().toISOString(),
+        category:       input.category ?? null,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: 'Failed to record manual task acknowledgement',
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
+
