@@ -149,6 +149,7 @@ export interface BlogFieldIds {
   titleId:   string
   dateId:    string
   contentId: string
+  imageId?:  string   // optional — not all Blog schemas have an Image field
 }
 
 async function resolveBlogFieldIds(blog: FramerClient): Promise<BlogFieldIds> {
@@ -158,10 +159,11 @@ async function resolveBlogFieldIds(blog: FramerClient): Promise<BlogFieldIds> {
   const titleId   = byName['Title']?.id
   const dateId    = byName['Date']?.id
   const contentId = byName['Content']?.id
+  const imageId   = byName['Image']?.id   // optional
   if (!titleId || !dateId || !contentId) {
     throw new Error(`Blog schema missing required field. Have: ${Object.keys(byName).join(', ')}`)
   }
-  return { titleId, dateId, contentId }
+  return { titleId, dateId, contentId, imageId }
 }
 
 export interface BlogItemSummary {
@@ -188,10 +190,11 @@ export async function listBlogItems(tenant: TenantConfig): Promise<BlogItemSumma
 // ── Draft + preview (write to data model, NOT to production) ────────────────
 
 export interface BlogPostDraft {
-  slug:    string
-  title:   string
-  content: string             // HTML in Framer's formattedText format
-  date?:   string             // ISO 8601; defaults to now
+  slug:     string
+  title:    string
+  content:  string             // HTML in Framer's formattedText format
+  date?:    string             // ISO 8601; defaults to now
+  imageUrl?: string            // external URL — Framer downloads + re-hosts
 }
 
 export interface FramerPreviewChange {
@@ -243,16 +246,19 @@ export async function draftAndPreviewBlogPost(
     }
 
     const blog = await findBlog(fr)
-    const { titleId, dateId, contentId } = await resolveBlogFieldIds(blog)
+    const { titleId, dateId, contentId, imageId } = await resolveBlogFieldIds(blog)
 
-    await blog.addItems([{
-      slug: post.slug,
-      fieldData: {
-        [titleId]:   { type: 'string',        value: post.title },
-        [dateId]:    { type: 'date',          value: post.date ?? new Date().toISOString() },
-        [contentId]: { type: 'formattedText', value: post.content },
-      },
-    }])
+    const fieldData: Record<string, { type: string; value: unknown }> = {
+      [titleId]:   { type: 'string',        value: post.title },
+      [dateId]:    { type: 'date',          value: post.date ?? new Date().toISOString() },
+      [contentId]: { type: 'formattedText', value: post.content },
+    }
+    if (post.imageUrl && imageId) {
+      // Framer accepts an external URL here and downloads + re-hosts on framerusercontent.com.
+      fieldData[imageId] = { type: 'image', value: { url: post.imageUrl } }
+    }
+
+    await blog.addItems([{ slug: post.slug, fieldData }])
 
     const items = await blog.getItems()
     const created = items.find((i: { slug: string }) => i.slug === post.slug)
@@ -332,9 +338,10 @@ export async function createAndPublishBlogPost(
   input:  { slug: string; title: string; content: string; imageUrl?: string },
 ): Promise<CreateAndPublishResult> {
   const draft = await draftAndPreviewBlogPost(tenant, {
-    slug:    input.slug,
-    title:   input.title,
-    content: input.content,
+    slug:     input.slug,
+    title:    input.title,
+    content:  input.content,
+    imageUrl: input.imageUrl,
   })
   let publish: ConfirmPublishResult
   try {
