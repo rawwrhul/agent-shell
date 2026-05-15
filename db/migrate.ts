@@ -1,6 +1,7 @@
 import { Pool } from 'pg'
 import 'dotenv/config'
 import { runR3Migration } from './migrations/r3-tenant-schedules-and-domain'
+import { runPhase8Migration } from './migrations/phase8-two-stage-approval'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -290,6 +291,7 @@ async function migrate() {
     ON run_scratchpad (run_id, key)`)
 
   await runR3Migration(pool)
+  await runPhase8Migration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

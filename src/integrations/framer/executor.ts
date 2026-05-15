@@ -198,3 +198,97 @@ export async function execManualOperatorTask(
   }
 }
 
+
+
+// ── Phase 8: execApproveBlogPitch ───────────────────────────────────────────
+//
+// Stage 1 of the two-stage approval flow. Fires when operator approves a
+// `approve_blog_pitch` proposal in Slack. Side effects:
+//   1) Creates the Framer CMS draft via draftAndPreviewBlogPost (writes the
+//      Title, Date, Content, and Image fields; gets a confirmationHash).
+//   2) Inserts a Stage 2 approval row with tool_name='framer_confirm_publish',
+//      parent_approval_id pointing back at this Stage 1 row. The hitl
+//      worker's standard Slack-card path picks this up and posts the
+//      Stage 2 card automatically.
+//   3) Returns success — the executor framework writes execution_jobs.result
+//      with the new approvalId so the operator can trace the chain.
+//
+// On any failure: surfaces the error via the standard ExecutionResult.error
+// channel. The Stage 1 approval row is marked execution_error by the
+// framework, and the operator sees the failure in Slack.
+
+import { createApproval } from '../../hitl/state-store'
+import { pool } from '../../memory/postgres'
+
+export interface ApproveBlogPitchInput {
+  slug:        string
+  title:       string
+  content:     string             // HTML in Framer formattedText format
+  imageUrl?:   string
+  whyThisTopic?: string
+}
+
+export async function execApproveBlogPitch(
+  input: ApproveBlogPitchInput, ctx: IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!input.slug || !input.title || !input.content) {
+    return { ok: false, summary: 'approve_blog_pitch error: slug, title, content all required',
+             error: 'missing required field in toolInput' }
+  }
+  try {
+    // 1. Create the Framer draft (writes CMS item, gets confirmationHash)
+    const draft = await fr.draftAndPreviewBlogPost(ctx.tenant, {
+      slug:     input.slug,
+      title:    input.title,
+      content:  input.content,
+      imageUrl: input.imageUrl,
+    })
+
+    // 2. File the Stage 2 approval (framer_confirm_publish), linked to Stage 1
+    const stage1ApprovalId = ctx.approvalId
+    if (!stage1ApprovalId) {
+      return { ok: false, summary: 'approve_blog_pitch error: missing Stage 1 approvalId in context',
+               error: 'ctx.approvalId is undefined; cannot link Stage 2 back' }
+    }
+
+    const projectUrl = ctx.tenant.framer_project_url ?? ''
+    const stage2 = await createApproval(pool, {
+      tenantId:        ctx.tenant.tenantId,
+      taskId:          ctx.taskId,
+      toolName:        'framer_confirm_publish',
+      toolInput:       {
+        confirmationHash: draft.preview.confirmationHash,
+        itemId:           draft.itemId,
+        slug:             input.slug,
+        title:            input.title,
+      } as Record<string, unknown>,
+      riskLevel:       'high',
+      riskReason:      'Will publish the drafted post live to tarino.au.',
+      priority:        'P1',
+      proposedAction:  `Publish '${input.title}' to /resources/${input.slug}`,
+      whyPriority:     input.whyThisTopic ?? 'Draft ready for review in Framer.',
+      slackChannelId:  null as unknown as string | undefined,  // presenter looks up from slack_runs
+      previewUrl:      projectUrl,                             // links to Framer project for draft review
+      parentApprovalId: stage1ApprovalId,
+    })
+
+    return {
+      ok:      true,
+      summary: `Draft created in Framer. Stage 2 approval posted (id ${stage2.id.slice(0, 8)}).`,
+      detail: {
+        itemId:           draft.itemId,
+        slug:             input.slug,
+        confirmationHash: draft.preview.confirmationHash,
+        stage2ApprovalId: stage2.id,
+        framerProjectUrl: projectUrl,
+        productionUrl:    `https://tarino.au/resources/${input.slug}`,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `approve_blog_pitch failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 400),
+    }
+  }
+}

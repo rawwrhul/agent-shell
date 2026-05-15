@@ -155,12 +155,17 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
       "Create a HITL approval request for any action that touches the public site or sends external " +
       "messages. Files the request — does NOT execute. The executor runs only after operator approval.\n\n" +
       "You MUST set toolName to ONE of these registered executor names:\n\n" +
-      "  • framer_create_and_publish_blog_post — atomic create + publish of a NEW blog post on the Framer Blog. " +
+      "  • approve_blog_pitch — PRIMARY path for NEW blog posts (Phase 8 two-stage flow). " +
+      "toolInput = { slug: <kebab-case>, title: <string>, content: <full HTML in Framer formattedText>, imageUrl: <Pexels landscape URL>, whyThisTopic?: <one-sentence rationale for the operator> }. " +
+      "This files a PITCH approval. On approve: a Framer draft is created (operator can review in Framer's editor) AND a SECOND approval card appears in the same Slack thread for the publish gate. " +
+      "On reject: nothing is created in Framer. " +
+      "Set previewUrl to https://tarino.au/resources/<slug> — operator visits this AFTER the publish stage approval.\n\n" +
+      "  • framer_create_and_publish_blog_post — DEPRECATED single-stage path. Do not use for new posts. " +
       "toolInput = { slug: <kebab-case string, becomes /blog/<slug>>, title: <string>, content: <HTML in Framer formattedText: <p dir=\"auto\">…</p>, <h2>, <strong>, <ul><li>, etc.>, imageUrl?: <optional hero image URL> }. " +
       "Put the FULL post content in toolInput.content — no need to call framer_draft_blog_post first. " +
       "On approve: executor creates the CMS item AND publishes the site in one atomic operation. " +
       "On reject: no-op (nothing was created). " +
-      "Set previewUrl to https://tarino.au/blog/<slug> for the post-publish link (the operator clicks it after approving).\n\n" +
+      "Set previewUrl to https://tarino.au/resources/<slug> for the post-publish link (the operator clicks it after approving the publish stage).\n\n" +
       "  • manual_operator_task — for changes Framer's Server API can't do programmatically. " +
       "Use this for schema markup pastes, internal linking edits, copy changes on existing pages, page-level SEO meta edits, new landing pages. " +
       "toolInput = { instruction: <full step-by-step instructions including any JSON-LD / HTML / anchor-text strings the operator needs to paste, verbatim>, category?: <'schema' | 'linking' | 'copy' | 'meta' | 'new-page'> }. " +
@@ -186,7 +191,7 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
             "Optional URL the operator can click to preview the change before approving. " +
             "For framer_confirm_publish: there is no staging preview (Framer's publish pushes to all " +
             "custom hostnames simultaneously), so set this to the production URL the post will appear " +
-            "at — https://tarino.au/blog/<slug>. The Slack approval card renders this as a clickable " +
+            "at — https://tarino.au/resources/<slug>. The Slack approval card renders this as a clickable " +
             "'View preview ↗' link the operator can use to verify after approval.",
         },
       },

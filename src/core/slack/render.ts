@@ -175,6 +175,9 @@ function inferActionKind(toolName: string): import('./blocks/approval').Approval
   const n = toolName.toLowerCase()
   // Phase 6: atomic create + publish path is the primary blog-post executor.
   if (n === 'framer_create_and_publish_blog_post') return 'publish_content'
+  // Phase 8: two-stage approval Stage 1 — pitch maps to publish_content
+  // so the operator sees the right icon and 'Approve & publish' label.
+  if (n === 'approve_blog_pitch')                  return 'publish_content'
   // Phase 6: manual operator tasks (schema, linking, copy edits) — operator does
   // the actual change in Framer; on approve the executor just acknowledges.
   if (n === 'manual_operator_task')                return 'modify_live_page'

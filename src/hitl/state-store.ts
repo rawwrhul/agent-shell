@@ -197,6 +197,10 @@ export interface CreateApprovalInput {
   // "View preview ↗" link. Typically a Framer staging URL for draft
   // pages, or a live noindex URL if drafts aren't supported on plan.
   previewUrl?:      string;
+
+  /** Phase 8 (15 May 2026): for two-stage flow, Stage 2 rows link back
+   *  to Stage 1 via parent_approval_id so the chain is traceable. */
+  parentApprovalId?: string;
 }
 
 export async function createApproval(pool: Pool, input: CreateApprovalInput): Promise<ApprovalRow> {
@@ -205,9 +209,9 @@ export async function createApproval(pool: Pool, input: CreateApprovalInput): Pr
        tenant_id, task_id, session_id, tool_name, tool_input,
        risk_level, risk_reason, priority, proposed_action, detail,
        why_priority, slack_channel_id, slack_message_ts, sheet_row_number,
-       preview_url
+       preview_url, parent_approval_id
      ) VALUES (
-       $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15
+       $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16
      )
      RETURNING ${SELECT_COLS}`,
     [
@@ -226,6 +230,7 @@ export async function createApproval(pool: Pool, input: CreateApprovalInput): Pr
       input.slackMessageTs ?? null,
       input.sheetRowNumber ?? null,
       input.previewUrl ?? null,
+      input.parentApprovalId ?? null,
     ],
   );
   logger.info('approval_created', {

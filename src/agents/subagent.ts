@@ -660,35 +660,39 @@ Before filing a propose_action or log_opportunity, quickly check approval_reques
 
 **Learn from past runs.** Call query_memory with type='learning' early in the run — the weekly audit writes retrospective findings here (keys prefixed 'retro-') about what kinds of changes have actually moved the needle for ${tenant.clientName} in the past. If past data shows (for example) that title-rewrites for /service-pages moved rankings 3+ spots, lean into more of that. If it shows that schema additions did nothing, deprioritise those. The retrospective memories are how the agent gets smarter over time — don't ignore them.
 
-## On Framer blog posts
+## On Framer blog posts (two-stage approval, Phase 8)
 
-To propose a new blog post (atomic create + publish, no orphan drafts):
+Two operator-facing gates: PITCH (you propose; operator says is-this-worth-writing?) then PUBLISH (operator reviews the actual draft in Framer; says ship-it?). Both are propose_action calls — you only ever file one card per post. The second card is created by the executor on the operator's first approval.
 
-1. Call framer_get_changed_paths first. If it shows any pending changes in the workspace, STOP — surface the situation to the operator rather than proceeding. Publishing would bundle those changes with your post.
+To propose a new blog post:
+
+1. Call framer_get_changed_paths first. If it shows any pending changes in the workspace, STOP — surface the situation to the operator rather than proceeding. Publishing would bundle those changes.
 
 2. Call framer_list_blog_items. Two purposes:
    (a) Confirm your proposed slug is unique.
-   (b) Pick 2-3 of the most recent posts and study them — they ARE the voice you should write in. Mirror cadence, paragraph length, register, and structure (how long is the intro? how often are subheads used? does the post tend to end with a CTA or a thought?). The tone is the operator's real voice; do not invent your own.
+   (b) Pick 2-3 of the most recent posts and study them — they ARE the voice you write in. Mirror cadence, paragraph length, register, and structure. The tone is the operator's real voice; do not invent your own.
 
 3. Write the post in full — title + slug + content. Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>, etc.
 
-4. Inside the body, embed 2-4 internal links to other Tarino posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="/blog/SLUG">descriptive anchor text</a> — use the slug from framer_list_blog_items. Anchor text should be a real noun phrase from the sentence, not "click here" or the bare title.
+4. Inside the body, embed 2-4 internal links to other Tarino posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="/resources/SLUG">descriptive anchor text</a> — use slugs from framer_list_blog_items. Anchor text should be a real noun phrase from the sentence.
 
-5. Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject — "australian small business owner laptop", "calculator paperwork desk", "warehouse logistics team". Avoid abstract phrases like "offshore hiring" (they return cliché globe-handshake stock). Pick the most editorially-relevant result. Use the "url_for_post" field from the response — that's the landscape-cropped URL ready to drop into Framer.
+5. Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject — "australian small business owner laptop", "calculator paperwork desk", "warehouse logistics team". Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — that's the landscape-cropped URL.
 
-6. File propose_action with:
-     toolName       = "framer_create_and_publish_blog_post"
-     toolInput      = { slug, title, content, imageUrl }
-     proposedAction = one-line plain-English summary for the Slack card
+6. File propose_action ONCE with:
+     toolName       = "approve_blog_pitch"
+     toolInput      = { slug, title, content, imageUrl, whyThisTopic }
+     proposedAction = one-line plain-English pitch summary for the operator (this is what they read first)
      priority       = P0 / P1 / P2 / P3
-     previewUrl     = the post-publish URL the operator can visit after approving (https://tarino.au/blog/ followed by the slug)
+     previewUrl     = the post-publish URL the operator can visit AFTER both approvals (https://tarino.au/resources/ followed by the slug). It will 404 until Stage 2 approve.
 
-On approval: executor creates the CMS item AND publishes the site atomically. The post goes live at https://tarino.au/blog/(slug) within seconds — with the chosen image and embedded internal links intact.
-On rejection: nothing is created. No cleanup needed.
+What happens after:
+   - On Stage 1 approve (operator likes the pitch): executor creates the CMS draft in Framer (Title, Date, Content, Image fields filled), then posts a Stage 2 card in the same thread. The Stage 2 card links to Framer where the operator can review the actual rendered draft. Approving Stage 2 publishes to tarino.au.
+   - On Stage 1 reject: nothing is created in Framer. No cleanup needed.
+   - On Stage 2 reject: the draft is removed from Framer (rollback).
 
-Note: do NOT call framer_draft_blog_post for new posts — that's the legacy two-phase path. The atomic path is cleaner because the operator approves CONTENT (not just a publish), and rejection leaves no cruft in the Blog collection.
+Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName \'framer_create_and_publish_blog_post\' (deprecated single-stage path). The draft creation happens server-side after Stage 1 approval — you only file the pitch.
 
-For changes Framer's API can't do programmatically — editing existing pages, SEO meta on pages, internal linking inside existing posts, schema markup, new landing pages — use propose_action with toolName="manual_operator_task". The instruction field should be detailed enough that the operator can do the work in Framer's editor without further input from you. Include verbatim code blocks for schema, exact anchor text + source/target pages for linking, full revised copy for content tweaks.
+For non-blog work — schema markup, internal linking inside EXISTING posts, copy edits on live pages, meta tag updates, new landing pages — use propose_action with toolName="manual_operator_task". The instruction field should be detailed enough that the operator can do the work in Framer's editor without further input from you.
 `
     : `# Task mode: PROPOSE CHANGES (can file approvals)
 

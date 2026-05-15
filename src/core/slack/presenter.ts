@@ -275,19 +275,36 @@ export class SlackPresenter {
   // Approval messages — non-threaded
   // ──────────────────────────────────────────────────────────────────────
 
+  // Phase 8: thread approval cards under the run's anchor message so the
+  // channel stays clean. Falls back to channel-level if no run row exists.
   async requestApproval(input: ApprovalRequestInput): Promise<void> {
-    await this.postChannel(input.tenantId, input.channelId, renderApprovalRequest(input));
+    const run = await getRun(this.pool, input.taskId);
+    if (run?.anchorTs) {
+      await this.postThread(input.tenantId, input.channelId, run.anchorTs,
+        renderApprovalRequest(input));
+    } else {
+      await this.postChannel(input.tenantId, input.channelId, renderApprovalRequest(input));
+    }
     this.logger.info('slack_approval_posted', {
       tenantId: input.tenantId, taskId: input.taskId,
       tool: input.toolName, approvalId: input.approvalId,
+      threaded: !!run?.anchorTs,
     });
   }
 
+  // Phase 8: thread approval-resolved messages too.
   async approvalResolved(input: ApprovalResolvedInput): Promise<void> {
-    await this.postChannel(input.tenantId, input.channelId, renderApprovalResolved(input));
+    const run = await getRun(this.pool, input.taskId);
+    if (run?.anchorTs) {
+      await this.postThread(input.tenantId, input.channelId, run.anchorTs,
+        renderApprovalResolved(input));
+    } else {
+      await this.postChannel(input.tenantId, input.channelId, renderApprovalResolved(input));
+    }
     this.logger.info('slack_approval_resolved', {
       tenantId: input.tenantId, taskId: input.taskId,
       tool: input.toolName, decision: input.decision,
+      threaded: !!run?.anchorTs,
     });
   }
 
@@ -305,9 +322,16 @@ export class SlackPresenter {
   // execution_jobs row + approval_requests.executed_outcome are
   // authoritative for state — this is just the UX surface).
 
+  // Phase 8: thread execution-result notification too.
   async notifyExecutionResult(input: ExecutionResultInput): Promise<void> {
     try {
-      await this.postChannel(input.tenantId, input.channelId, renderExecutionResult(input));
+      const run = await getRun(this.pool, input.taskId);
+      if (run?.anchorTs) {
+        await this.postThread(input.tenantId, input.channelId, run.anchorTs,
+          renderExecutionResult(input));
+      } else {
+        await this.postChannel(input.tenantId, input.channelId, renderExecutionResult(input));
+      }
       this.logger.info('slack_execution_result_posted', {
         tenantId: input.tenantId, taskId: input.taskId,
         approvalId: input.approvalId, ok: input.ok,

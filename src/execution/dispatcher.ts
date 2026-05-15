@@ -8,6 +8,7 @@ import {
   execFramerRollbackDraft,
   execFramerCreateAndPublishBlogPost,
   execManualOperatorTask,
+  execApproveBlogPitch,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
@@ -38,6 +39,11 @@ const HANDLERS: Record<
   // The agent describes what needs doing; the operator does it manually in Framer.
   'manual_operator_task':      (i, c) =>
     execManualOperatorTask(i as unknown as Parameters<typeof execManualOperatorTask>[0], c),
+
+  // Phase 8: two-stage approval — agent files approve_blog_pitch.
+  // On approve, executor creates Framer draft + queues Stage 2 (framer_confirm_publish).
+  'approve_blog_pitch':        (i, c) =>
+    execApproveBlogPitch(i as unknown as Parameters<typeof execApproveBlogPitch>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),
