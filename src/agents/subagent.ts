@@ -726,6 +726,14 @@ B.5  Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the po
 
 ### Phase C — File the pitch
 
+HARD REQUIREMENTS BEFORE FILING (server-side validated — your pitch will be REJECTED with an error if any of these are missing):
+
+1. toolInput.imageUrl MUST be a non-empty URL. If you have not called pexels_search yet, do it NOW (step B.5). Without a hero image the published page renders broken. NOT optional.
+
+2. toolInput.content MUST contain at least 2 internal links in the form <a href="/resources/SLUG">anchor text</a>. Use slugs from framer_list_blog_items. Anchor text must be a real noun phrase (not 'click here', not the bare title). NOT optional.
+
+If you file without these, the system returns PITCH_VALIDATION_FAILED and you have to redo the work. Treat them as preconditions, not nice-to-haves. The operator sees a broken page if you skip them; the validation exists to protect them.
+
 C.1  File propose_action ONCE with:
      toolName       = "approve_blog_pitch"
      toolInput      = { slug, title, content, imageUrl, whyThisTopic }

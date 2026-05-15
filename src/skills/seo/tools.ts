@@ -403,6 +403,35 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     previewUrl?: string;
   };
 
+  // Phase 9c: approve_blog_pitch validation. Forces the agent to comply
+  // with the prompt's image + internal-link requirements rather than
+  // skipping them silently. Returns an error string the agent reads as
+  // a tool-failure and must redo.
+  if (i.toolName === 'approve_blog_pitch') {
+    const ti = (i.toolInput ?? {}) as Record<string, unknown>
+    const imageUrl = typeof ti.imageUrl === 'string' ? ti.imageUrl.trim() : ''
+    const content  = typeof ti.content  === 'string' ? ti.content        : ''
+    const linkCount = (content.match(/<a\s+href=/gi) ?? []).length
+    const errors: string[] = []
+    if (!imageUrl) {
+      errors.push(
+        'PITCH_VALIDATION_FAILED: toolInput.imageUrl is empty. You must call pexels_search with a 2-4 word concrete-noun query before filing the pitch, and include the returned url_for_post in toolInput.imageUrl. Without an image the published page looks broken.'
+      )
+    }
+    if (linkCount < 2) {
+      errors.push(
+        `PITCH_VALIDATION_FAILED: toolInput.content has ${linkCount} internal links; you need at least 2. Embed 2-4 <a href="/resources/SLUG">descriptive anchor text</a> elements inside the body, linking to existing Tarino posts from framer_list_blog_items. Internal links are a hard requirement, not optional.`
+      )
+    }
+    if (errors.length > 0) {
+      logger.warn('seo_propose_action_pitch_validation_failed', {
+        tenantId: ctx.tenantId, taskId: ctx.taskId,
+        imageUrlPresent: !!imageUrl, linkCount,
+      })
+      return errors.join('\n\n') + '\n\nRedo your work to satisfy these requirements, then call propose_action again. Do not file another pitch until both pass.'
+    }
+  }
+
   // Task 0.5.1 hotfix: hoist tenant lookup so we can use tenant.slackChannelId
   //   as a fallback for ctx.channelId (which can be null when the task wasn't
   //   initiated via a Slack mention). Without this fallback, approval rows

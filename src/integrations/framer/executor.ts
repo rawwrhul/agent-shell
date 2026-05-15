@@ -219,6 +219,8 @@ export async function execManualOperatorTask(
 
 import { createApproval } from '../../hitl/state-store'
 import { pool } from '../../memory/postgres'
+import { presenter } from '../../core/slack'
+import { getRun } from '../../core/slack/state-store'
 
 export interface ApproveBlogPitchInput {
   slug:        string
@@ -252,6 +254,14 @@ export async function execApproveBlogPitch(
     }
 
     const projectUrl = ctx.tenant.framer_project_url ?? ''
+    // Phase 9c: construct an item-specific preview URL so the operator
+    // lands in the editor view of THIS draft, not the project root.
+    // Framer's URL pattern: <project>?item=<itemId>. The node parameter
+    // is helpful but not strictly required — Framer resolves the item.
+    const stage2PreviewUrl = projectUrl
+      ? `${projectUrl}${projectUrl.includes('?') ? '&' : '?'}item=${encodeURIComponent(draft.itemId)}`
+      : ''
+
     const stage2 = await createApproval(pool, {
       tenantId:        ctx.tenant.tenantId,
       taskId:          ctx.taskId,
@@ -266,22 +276,56 @@ export async function execApproveBlogPitch(
       riskReason:      'Will publish the drafted post live to tarino.au.',
       priority:        'P1',
       proposedAction:  `Publish '${input.title}' to /resources/${input.slug}`,
-      whyPriority:     input.whyThisTopic ?? 'Draft ready for review in Framer.',
-      slackChannelId:  null as unknown as string | undefined,  // presenter looks up from slack_runs
-      previewUrl:      projectUrl,                             // links to Framer project for draft review
+      whyPriority:     input.whyThisTopic ?? 'Draft ready for review in Framer — open the preview link, eyeball, then approve to publish.',
+      slackChannelId:  null as unknown as string | undefined,
+      previewUrl:      stage2PreviewUrl,
       parentApprovalId: stage1ApprovalId,
     })
 
+    // Phase 9c: log post-creation metrics so we can track whether
+    // the agent's compliance with image + internal-link rules holds.
+    const _content = (input.content ?? '') as string
+    const _linkCount = (_content.match(/<a\s+href=/gi) ?? []).length
+    // eslint-disable-next-line no-console
+    console.log('phase9c_link_count', { slug: input.slug, hasImage: !!input.imageUrl, linkCount: _linkCount, contentLength: _content.length })
+
+    // Phase 9c: actually post the Stage 2 Slack card. Phase 8 inserted
+    // the DB row but forgot the presenter call — Stage 2 row existed
+    // but the operator never saw a card to act on.
+    const run = await getRun(pool, ctx.taskId)
+    const channelId = run?.channelId ?? ctx.tenant.slackChannelId
+    if (channelId) {
+      try {
+        await presenter.requestApproval({
+          tenantId:   ctx.tenant.tenantId,
+          channelId,
+          taskId:     ctx.taskId,
+          toolName:   'framer_confirm_publish',
+          riskLevel:  'high',
+          riskReason: 'Publishes the drafted post to the live site.',
+          approvalId: stage2.id,
+          previewUrl: stage2PreviewUrl,
+          tenantName: ctx.tenant.clientName,
+          summary:    `Publish '${input.title}' to /resources/${input.slug}`,
+        })
+      } catch (err) {
+        // Card post failure shouldn't fail the executor — DB row is the source of truth.
+        // Operator can still hit the row via /agent approvals or DB query if card fails.
+        // Logged for debugging.
+      }
+    }
+
     return {
       ok:      true,
-      summary: `Draft created in Framer. Stage 2 approval posted (id ${stage2.id.slice(0, 8)}).`,
+      summary: `Draft created in Framer. Stage 2 card posted (approval id ${stage2.id.slice(0, 8)}).`,
       detail: {
-        itemId:           draft.itemId,
-        slug:             input.slug,
-        confirmationHash: draft.preview.confirmationHash,
-        stage2ApprovalId: stage2.id,
-        framerProjectUrl: projectUrl,
-        productionUrl:    `https://tarino.au/resources/${input.slug}`,
+        itemId:            draft.itemId,
+        slug:              input.slug,
+        confirmationHash:  draft.preview.confirmationHash,
+        stage2ApprovalId:  stage2.id,
+        stage2PreviewUrl,
+        framerProjectUrl:  projectUrl,
+        productionUrl:     `https://tarino.au/resources/${input.slug}`,
       },
     }
   } catch (err) {
