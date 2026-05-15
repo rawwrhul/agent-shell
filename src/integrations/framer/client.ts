@@ -255,7 +255,7 @@ export async function draftAndPreviewBlogPost(
     }
     if (post.imageUrl && imageId) {
       // Framer accepts an external URL here and downloads + re-hosts on framerusercontent.com.
-      fieldData[imageId] = { type: 'image', value: { url: post.imageUrl } }
+      fieldData[imageId] = { type: 'image', value: post.imageUrl }
     }
 
     await blog.addItems([{ slug: post.slug, fieldData }])
