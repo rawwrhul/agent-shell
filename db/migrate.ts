@@ -2,6 +2,7 @@ import { Pool } from 'pg'
 import 'dotenv/config'
 import { runR3Migration } from './migrations/r3-tenant-schedules-and-domain'
 import { runPhase8Migration } from './migrations/phase8-two-stage-approval'
+import { runSeo1CrawlerMigration } from './migrations/seo-1-crawler'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -292,6 +293,7 @@ async function migrate() {
 
   await runR3Migration(pool)
   await runPhase8Migration(pool)
+  await runSeo1CrawlerMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

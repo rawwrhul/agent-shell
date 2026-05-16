@@ -56,6 +56,9 @@ import {
 import {
   SEO_TOOLS, executeSeoTool, isSeoToolName,
 } from '../skills/seo'
+import {
+  CRAWLER_TOOLS, executeCrawlerTool, isCrawlerToolName,
+} from '../core/crawler'
 import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 import {
   buildIntegrationToolsForTenant,
@@ -173,6 +176,7 @@ function buildToolsForSpecialist(opts: {
     } else {
       tools.push(...SEO_TOOLS)
     }
+    tools.push(...CRAWLER_TOOLS)
   }
   tools.push(...buildIntegrationToolsForTenant(opts.tenant))
   return tools
@@ -384,6 +388,17 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
               tb.name,
               tb.input as Record<string, unknown>,
               seoToolCtx,
+            )
+            results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
+            continue
+          }
+
+          // Crawler tools (SEO-1) — read-only inventory queries, no hook
+          if (isCrawlerToolName(tb.name)) {
+            const output = await executeCrawlerTool(
+              tb.name,
+              tb.input as Record<string, unknown>,
+              tenant,
             )
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
