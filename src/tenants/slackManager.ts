@@ -13,7 +13,10 @@ import { registerHitlActionHandlers } from '../hitl'
  * itself is mutated as bots boot/restart; consumers should look up at call
  * time rather than caching values.
  */
-export const apps = new Map<string, App>()
+// Phase 9c-fix: apps Map moved to its own module to break the circular
+// import that crashed the SlackPresenter. See apps-registry.ts for why.
+import { apps } from './apps-registry'
+export { apps }
 
 export async function startAllTenantBots() {
   const rows = await listActiveTenants()

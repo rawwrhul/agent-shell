@@ -12,7 +12,10 @@
 //
 // Don't construct your own SlackPresenter — there is one per process.
 
-import { apps }   from '../../tenants/slackManager'
+// Phase 9c-fix: import apps from the leaf registry, not slackManager.
+// Going through slackManager creates a circular load via
+// hitl→execution→executor→core/slack which broke the presenter.
+import { apps }   from '../../tenants/apps-registry'
 import { pool }   from '../../memory/postgres'
 import { logger } from '../../logger'
 import { SlackPresenter } from './presenter'
