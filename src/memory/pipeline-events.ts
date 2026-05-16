@@ -167,3 +167,60 @@ export async function onPublishFailed(params: {
     })
   }
 }
+
+// ── Hook 4: site crawl completed ──────────────────────────────────────────
+//
+// Fires from src/core/crawler/crawler.ts after finishCrawlRun() succeeds.
+// Writes a single L2 fact entry (key='site-inventory') capturing the latest
+// crawl's summary stats so future agent runs see it as ambient context
+// without needing to call the crawler tools first. Each crawl overwrites
+// the prior entry — the agent only ever sees the most recent inventory.
+
+export async function onCrawlCompleted(params: {
+  tenantId:         string
+  pagesCrawled:     number
+  pagesFailed:      number
+  pagesSkipped:     number
+  statusBreakdown:  Record<string, number>
+  pagesMissingH1:   number
+  pagesMissingMeta: number
+  orphanedPages:    number
+  internalEdges:    number
+}): Promise<void> {
+  const {
+    tenantId, pagesCrawled, pagesFailed, pagesSkipped, statusBreakdown,
+    pagesMissingH1, pagesMissingMeta, orphanedPages, internalEdges,
+  } = params
+
+  try {
+    const date = today()
+    const statusStr = Object.entries(statusBreakdown)
+      .sort()
+      .map(([k, v]) => `${v} ${k}`)
+      .join(', ') || 'unknown'
+
+    const failPart = pagesFailed ? `, ${pagesFailed} failed` : ''
+    const skipPart = pagesSkipped ? `, ${pagesSkipped} skipped` : ''
+
+    const issues: string[] = []
+    if (orphanedPages    > 0) issues.push(`${orphanedPages} orphan${orphanedPages === 1 ? '' : 's'}`)
+    if (pagesMissingH1   > 0) issues.push(`${pagesMissingH1} missing H1`)
+    if (pagesMissingMeta > 0) issues.push(`${pagesMissingMeta} missing meta`)
+    const issuesPart = issues.length ? `. Issues: ${issues.join(', ')}` : '. No structural issues found'
+
+    const value = `[Crawled ${date}] ${pagesCrawled} pages (${statusStr})${failPart}${skipPart}${issuesPart}. ${internalEdges} internal edges.`
+
+    await recordMemory({
+      tenantId,
+      type:       'fact',
+      key:        'site-inventory',
+      value,
+      confidence: 1.0,
+    })
+  } catch (err) {
+    logger.warn('pipeline_hook_crawl_completed_failed', {
+      tenantId, err: String(err).slice(0, 300),
+    })
+  }
+}
+

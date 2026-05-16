@@ -37,7 +37,9 @@ import {
   upsertPageInventory,
   recordFetchFailure,
   replaceLinksForSource,
+  getCrawlSummaryStats,
 } from './store'
+import { onCrawlCompleted } from '../../memory/pipeline-events'
 import type {
   CrawlConfig,
   CrawlSummary,
@@ -297,6 +299,29 @@ export async function runCrawl(
     completedAt,
     error: fatalError,
   })
+
+  // ── L2 memory hook: write inventory summary so future agent runs see it
+  //    as ambient context. Best-effort; never blocks the return path.
+  if (status === 'completed') {
+    try {
+      const stats = await getCrawlSummaryStats(config.tenantId)
+      await onCrawlCompleted({
+        tenantId:         config.tenantId,
+        pagesCrawled,
+        pagesFailed,
+        pagesSkipped,
+        statusBreakdown:  stats.pagesByStatus,
+        pagesMissingH1:   stats.pagesMissingH1,
+        pagesMissingMeta: stats.pagesMissingMeta,
+        orphanedPages:    stats.orphanedPages,
+        internalEdges:    stats.totalEdges,
+      })
+    } catch (err) {
+      logger.warn('crawler_memory_hook_failed', {
+        runId, err: String(err).slice(0, 200),
+      })
+    }
+  }
 
   const summary: CrawlSummary = {
     runId,
