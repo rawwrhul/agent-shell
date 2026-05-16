@@ -15,17 +15,11 @@
 //     the Sheet so the persistent record stays accurate
 //   - createApprovalRequest now returns { id, rowNumber } so callers can
 //     record the row number on the PG row for fast subsequent updates
-//   - The legacy waitForApproval (Sheets-polling) is kept for any caller
-//     that still uses it, but new code should use state-store.ts:
-//     waitForApprovalResolution which polls PG
 
 import { google } from 'googleapis'
 import { v4 as uuid } from 'uuid'
 import { TenantConfig } from '../tenants/types'
 import { logger } from '../logger'
-
-const COL = { ID:0, TASK:1, SESSION:2, TOOL:3, INPUT:4, RISK:5, REASON:6, REQUESTED:7, STATUS:8, RESOLVED_AT:9, BY:10, REJECT:11 }
-const POLL = 15_000
 
 function sheets(tenant: TenantConfig) {
   const auth = new google.auth.GoogleAuth({
@@ -79,36 +73,6 @@ export async function createApprovalRequest(
   const rowNumber = rowMatch ? parseInt(rowMatch[1], 10) : null
 
   return { id, rowNumber }
-}
-
-/**
- * Legacy Sheets-polling wait function. Kept for backwards compatibility
- * with any caller that still uses the Sheets-as-truth flow. New code
- * should use state-store.waitForApprovalResolution instead — it polls
- * PG (where Slack clicks land) and is ~10x faster.
- *
- * @deprecated Use state-store.waitForApprovalResolution
- */
-export async function waitForApproval(
-  tenant: TenantConfig,
-  approvalId: string,
-  timeoutMs: number
-): Promise<{ status: 'approved'|'rejected'; resolvedBy: string; rejectionReason?: string }> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    await sleep(POLL)
-    const res = await sheets(tenant).spreadsheets.values.get({
-      spreadsheetId: tenant.hitlSpreadsheetId,
-      range:         `${tenant.hitlSheetName}!A:L`,
-    })
-    const row = (res.data.values ?? []).find(r => r[COL.ID] === approvalId)
-    if (!row) continue
-    const status = String(row[COL.STATUS] ?? '').toLowerCase()
-    if (status === 'approved' || status === 'rejected') {
-      return { status: status as 'approved'|'rejected', resolvedBy: String(row[COL.BY] ?? ''), rejectionReason: String(row[COL.REJECT] ?? '') }
-    }
-  }
-  throw new Error(`Approval ${approvalId} timed out`)
 }
 
 /**
@@ -196,4 +160,3 @@ export async function ensureHeaders(tenant: TenantConfig) {
   }
 }
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))

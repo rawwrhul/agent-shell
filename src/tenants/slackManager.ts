@@ -190,18 +190,3 @@ export async function startTenantBot(tenant: TenantConfig) {
   logger.info('tenant_bot_started', { tenantId: tenant.tenantId, client: tenant.clientName })
 }
 
-/**
- * @deprecated Prefer `import { presenter } from '../core/slack'` and its
- * lifecycle methods (startRun, recordSpecialistComplete, etc). This raw
- * post is kept as an escape hatch for code paths that haven't migrated;
- * new call sites should not use it.
- */
-export async function postToSlack(tenantId: string, channelId: string, text: string) {
-  const app = apps.get(tenantId)
-  if (!app) { logger.warn('no_bot_for_tenant', { tenantId }); return }
-  try {
-    await app.client.chat.postMessage({ channel: channelId, text, unfurl_links: false })
-  } catch (err) {
-    logger.error('slack_post_failed', { tenantId, channelId, err: String(err) })
-  }
-}

@@ -6,3 +6,8 @@ agent-progress/
 *.log
 .DS_Store
 .env.framer.local
+
+# Patch scripts and historical setup scaffolds — never commit these
+phase*.py
+phase*.sh
+*-patch.py
