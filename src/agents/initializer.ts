@@ -11,6 +11,7 @@ import { buildTenantSkillsPrompt } from '../skills/loader'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { createRunRecord, completeRunRecord } from '../memory/postgres'
 import { logger } from '../logger'
+import { cachedSystem, cachedTools } from '../lib/prompt-cache'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -38,12 +39,31 @@ export async function runInitializerAgent(task: AgentTask, tenant: TenantConfig)
       const response = await anthropic.messages.create({
         model:      tenant.agentModel,
         max_tokens: 8096,
-        system,
-        tools:      AGENT_TOOLS,
+        system:     cachedSystem(system),
+        tools:      cachedTools(AGENT_TOOLS),
         messages,
       })
 
-      tokenCount += (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0)
+      // Phase A: four-field accounting. Sum all input variants, scaling
+      // cache_read at 0.10x to reflect Anthropic's billing (cache hits cost
+      // 10% of normal input).
+      const usage = response.usage
+      const inputTokens    = usage?.input_tokens                ?? 0
+      const cacheCreation  = usage?.cache_creation_input_tokens ?? 0
+      const cacheRead      = usage?.cache_read_input_tokens     ?? 0
+      const outputTokens   = usage?.output_tokens               ?? 0
+      const billedThisTurn = inputTokens + cacheCreation + Math.round(cacheRead * 0.10) + outputTokens
+      tokenCount += billedThisTurn
+      logger.info('initializer_tokens', {
+        taskId:           task.id,
+        turn:             turns,
+        input_tokens:     inputTokens,
+        cache_creation:   cacheCreation,
+        cache_read:       cacheRead,
+        output_tokens:    outputTokens,
+        billed_this_turn: billedThisTurn,
+        cumulative:       tokenCount,
+      })
 
       if (response.stop_reason === 'end_turn') {
         logger.info('initializer_complete', { taskId: task.id, tokenCount, toolCount })
