@@ -20,6 +20,7 @@
 
 import * as fr from './client'
 import { logger } from '../../logger'
+import { onPublishSucceeded, onPublishFailed } from '../../memory/pipeline-events'
 import type { IntegrationContext, ExecutionResult } from '../types'
 
 // ── framer_confirm_publish ─────────────────────────────────────────────────
@@ -110,6 +111,14 @@ export async function execFramerConfirmPublish(
         deploymentId: prodResult.deployment?.id,
         slug:         input.slug,
       })
+
+      // Chunk 2c: record the publish success in L2 memory (replaces the
+      // 'pitch-approved' entry with 'published').
+      void onPublishSucceeded({
+        tenantId: ctx.tenant.tenantId,
+        slug:     input.slug ?? '',
+        title:    input.title,
+      })
     } catch (err) {
       // Staging was committed but production deploy failed. This is a
       // partial-success state — the draft is live on <project>.framer.app
@@ -121,6 +130,13 @@ export async function execFramerConfirmPublish(
         stagingDeploymentId: stagingResult.deployment?.id,
         slug:                input.slug,
         err:                 String(err).slice(0, 500),
+      })
+
+      // Chunk 2c: record the publish failure in L2 memory.
+      void onPublishFailed({
+        tenantId: ctx.tenant.tenantId,
+        slug:     input.slug ?? '',
+        error:    String(err),
       })
       return {
         ok:      false,

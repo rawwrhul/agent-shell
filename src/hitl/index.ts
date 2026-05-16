@@ -34,12 +34,78 @@ export function registerHitlActionHandlers(app: App): void {
     );
   });
 
+  // Reject button: open a modal asking for the rejection reason.
+  // The reason is the most valuable signal we capture from rejections — without
+  // it the L2 memory hook just records '[Rejected] X. Reason: no reason given.'
+  // which teaches the agent nothing. Optional field — operator can submit blank.
   app.action<BlockAction<ButtonAction>>('approval_reject', async ({ ack, body, action, client }) => {
     await ack();
     const ctx = buildCtx(body, action, client);
     if (!ctx) return;
-    await handleReject(ctx).catch((err) =>
-      logger.error('approval_reject_failed', { err: String(err) }),
+    const triggerId = (body as { trigger_id?: string }).trigger_id;
+    if (!triggerId) {
+      logger.warn('approval_reject_no_trigger_id');
+      return;
+    }
+    try {
+      await client.views.open({
+        trigger_id: triggerId,
+        view: {
+          type:        'modal',
+          callback_id: 'approval_reject_modal',
+          private_metadata: JSON.stringify({
+            approvalId:     ctx.approvalId,
+            slackChannelId: ctx.slackChannelId,
+            slackMessageTs: ctx.slackMessageTs,
+          }),
+          title:  { type: 'plain_text', text: 'Reject this?' },
+          submit: { type: 'plain_text', text: 'Reject' },
+          close:  { type: 'plain_text', text: 'Cancel' },
+          blocks: [
+            {
+              type:     'input',
+              block_id: 'reason_block',
+              optional: true,
+              label:    { type: 'plain_text', text: 'Why? (optional — but helps the agent learn what to avoid)' },
+              element:  {
+                type:        'plain_text_input',
+                action_id:   'reason_input',
+                multiline:   true,
+                placeholder: { type: 'plain_text', text: 'e.g. "cost framing too prominent", "topic overlap with /resources/X", "image quality too low"' },
+              },
+            },
+          ],
+        },
+      });
+    } catch (err) {
+      logger.error('approval_reject_modal_open_failed', { err: String(err) });
+    }
+  });
+
+  // Modal submission: extract reason and run the actual rejection.
+  app.view('approval_reject_modal', async ({ ack, body, view, client }) => {
+    await ack();
+    let metadata: { approvalId: string; slackChannelId: string; slackMessageTs: string };
+    try {
+      metadata = JSON.parse(view.private_metadata ?? '{}');
+    } catch (err) {
+      logger.error('approval_reject_modal_metadata_parse_failed', { err: String(err) });
+      return;
+    }
+    if (!metadata.approvalId || !metadata.slackChannelId || !metadata.slackMessageTs) {
+      logger.warn('approval_reject_modal_missing_metadata');
+      return;
+    }
+    const reason = view.state.values?.reason_block?.reason_input?.value ?? '';
+    const ctx: ActionContext = {
+      approvalId:     metadata.approvalId,
+      slackUserId:    body.user.id,
+      slackChannelId: metadata.slackChannelId,
+      slackMessageTs: metadata.slackMessageTs,
+      client,
+    };
+    await handleReject(ctx, reason).catch((err) =>
+      logger.error('approval_reject_modal_submission_failed', { err: String(err) }),
     );
   });
 

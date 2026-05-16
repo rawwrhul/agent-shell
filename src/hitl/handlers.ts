@@ -14,6 +14,7 @@ import type { WebClient } from '@slack/web-api';
 import { Pool } from 'pg';
 import { config } from '../config';
 import { logger } from '../logger';
+import { onApprovalResolved } from '../memory/pipeline-events';
 import {
   getApproval,
   resolveApproval,
@@ -64,6 +65,17 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
     /* swallowed — mirror failures already logged inside */
   });
 
+  // Chunk 2c: capture the terminal outcome in L2 memory.
+  void onApprovalResolved({
+    approvalId:     ctx.approvalId,
+    tenantId:       approval.tenantId,
+    toolName:       approval.toolName,
+    proposedAction: approval.proposedAction,
+    toolInput:      approval.toolInput,
+    status:         'approved',
+    resolvedBy:     ctx.slackUserId,
+  })
+
   try {
     const r = await onApprovalApproved(ctx.approvalId);
     if (r.enqueued) {
@@ -95,6 +107,18 @@ export async function handleReject(ctx: ActionContext, rejectionReason?: string)
 
   // Mirror to Sheet (best-effort)
   await mirrorResolutionToSheet(resolved, 'rejected', ctx.slackUserId, rejectionReason).catch(() => {});
+
+  // Chunk 2c: capture the terminal outcome (with operator's reason) in L2 memory.
+  void onApprovalResolved({
+    approvalId:      ctx.approvalId,
+    tenantId:        approval.tenantId,
+    toolName:        approval.toolName,
+    proposedAction:  approval.proposedAction,
+    toolInput:       approval.toolInput,
+    status:          'rejected',
+    resolvedBy:      ctx.slackUserId,
+    rejectionReason: rejectionReason,
+  })
 }
 
 export async function handleDefer24h(ctx: ActionContext): Promise<void> {

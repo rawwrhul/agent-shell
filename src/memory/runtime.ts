@@ -31,6 +31,12 @@ export async function recordMemory(input: MemoryInput): Promise<MemoryEntry> {
   return store.recordMemory(pool(), input)
 }
 
+export async function forgetMemory(
+  args: { tenantId: string; type: MemoryType; key: string }
+): Promise<boolean> {
+  return store.forgetMemory(pool(), args.tenantId, args.type, args.key)
+}
+
 export async function queryMemory(q: MemoryQuery): Promise<MemoryEntry[]> {
   return store.queryMemory(pool(), q)
 }

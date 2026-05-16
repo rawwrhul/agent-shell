@@ -955,6 +955,20 @@ When you would otherwise call web_fetch / analyze_page / framer_list_blog_items 
 - Active decisions: query_memory({type: 'decision'}) — pull ALL active strategic decisions (writing length, publishing cadence, structural style).
 - Past learnings: query_memory({type: 'learning'}) — see what's worked / failed in past runs, especially retro-* keys from the weekly audit.
 
+## Auto-populated entries (pipeline events)
+
+The pipeline writes these automatically — you'll see them in your memory context at run start without having to query:
+
+- \`learning / pitch-approved-{slug}\` — operator approved this pitch; executor is shipping it. Don't re-pitch the same topic.
+- \`learning / published-{slug}\` — this post went live. Confirms what's currently on the site. Useful for internal-link planning.
+- \`learning / shipped-{toolName}-{id}\` — non-blog work that landed (metadata edits, GSC submissions, schema additions, etc.). Don't propose the same thing again.
+- \`loss / pitch-rejected-{slug}\` — operator rejected the pitch at Stage 1, BEFORE seeing a draft. Read the Reason field — it tells you what to avoid in framing or topic selection.
+- \`loss / draft-rejected-{slug}\` — operator approved the pitch but rejected the rendered draft at Stage 2. Read the Reason field — it tells you about the EXECUTION (voice, structure, image, etc.) rather than the topic.
+- \`loss / rejected-{toolName}-{id}\` — non-blog rejection with reason. Don't re-propose the same change without addressing the rejection reason.
+- \`loss / publish-failed-{slug}\` — operator approved but the executor failed. Different problem than rejection. Usually transient or fixable infra.
+
+When you find a matching slug/topic in any of these, READ THE REASON before doing similar work.
+
 ## At end of run, record new stable facts
 
 If you derived something useful for FUTURE runs, record it before SPECIALIST_COMPLETE:
