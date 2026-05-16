@@ -40,7 +40,44 @@ function queue(): Queue<ScheduledRunPayload> {
 
 export async function bootstrapSchedules(): Promise<void> {
   const schedules = await listEnabledSchedules();
+
+  // Build the set of jobIds we WANT in Redis (excluding deprecated
+  // weekly). Anything else in Redis is orphaned and should be removed.
+  const desired = new Set(
+    schedules
+      .filter(s => s.runKind !== 'weekly')
+      .map(s => repeatableJobIdFor(s))
+  );
+
+  // Reconcile: remove repeatables in Redis that aren't in the desired
+  // set. Catches stale weekly jobs from before the 2026-05-16 deprecation,
+  // and schedules whose cron expression has changed (old + new would
+  // otherwise coexist and double-fire).
+  try {
+    const existing = await queue().getRepeatableJobs();
+    for (const j of existing) {
+      if (!j.id) continue;
+      if (j.id === 'global:pending-nudge-scan') continue;
+      if (!desired.has(j.id)) {
+        await queue().removeRepeatableByKey(j.key);
+        logger.info('schedule_orphan_removed', { jobId: j.id, pattern: j.pattern });
+      }
+    }
+  } catch (err) {
+    logger.warn('schedule_reconcile_failed', { err: String(err) });
+  }
+
   for (const s of schedules) {
+    // Weekly runs deprecated 2026-05-16. Filter here as a safety net so
+    // weekly schedules can't fire even if a DB row is still enabled.
+    // To re-enable: remove this block AND uncomment the weekly call in
+    // applyDefaultSchedulesFor (src/scheduler/config.ts).
+    if (s.runKind === 'weekly') {
+      logger.info('schedule_skipped_weekly_deprecated', {
+        tenantId: s.tenantId, runKind: s.runKind,
+      });
+      continue;
+    }
     await registerRepeatable(s).catch(err => {
       logger.error('schedule_register_failed', {
         tenantId: s.tenantId, runKind: s.runKind, err: String(err),
@@ -67,7 +104,24 @@ async function registerPendingNudgeScan(): Promise<void> {
     tz:      'Australia/Sydney',
   };
 
-  await removeRepeatableByPattern(jobId, repeatOpts);
+  // Remove any existing repeatable for this jobId regardless of its
+  // old cron pattern. The previous removeRepeatableByPattern matched on
+  // jobId+pattern+tz, which silently left stale repeatables behind when
+  // the cron expression changed — causing double-firing. The reconcile
+  // loop in bootstrapSchedules would also catch this, but fixing it here
+  // makes registerRepeatable correct in isolation.
+  try {
+    const repeatableJobs = await queue().getRepeatableJobs();
+    for (const j of repeatableJobs) {
+      if (j.id === jobId) {
+        await queue().removeRepeatableByKey(j.key);
+      }
+    }
+  } catch (err) {
+    logger.warn('register_remove_existing_failed', {
+      jobId, err: String(err),
+    });
+  }
 
   await queue().add(
     'pending-nudge-scan',
@@ -168,7 +222,24 @@ async function registerRepeatable(schedule: TenantSchedule): Promise<void> {
     tz:      schedule.timezone,
   };
 
-  await removeRepeatableByPattern(jobId, repeatOpts);
+  // Remove any existing repeatable for this jobId regardless of its
+  // old cron pattern. The previous removeRepeatableByPattern matched on
+  // jobId+pattern+tz, which silently left stale repeatables behind when
+  // the cron expression changed — causing double-firing. The reconcile
+  // loop in bootstrapSchedules would also catch this, but fixing it here
+  // makes registerRepeatable correct in isolation.
+  try {
+    const repeatableJobs = await queue().getRepeatableJobs();
+    for (const j of repeatableJobs) {
+      if (j.id === jobId) {
+        await queue().removeRepeatableByKey(j.key);
+      }
+    }
+  } catch (err) {
+    logger.warn('register_remove_existing_failed', {
+      jobId, err: String(err),
+    });
+  }
 
   await queue().add(
     'scheduled-run',
