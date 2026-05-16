@@ -939,11 +939,41 @@ The system runs a reconciliation check at the end of your run. It compares what 
 
 If you want the operator to do something but you haven't yet called propose_action, write it as a finding ("Recommend hiding /home-2 from Google"), not as an action ("I've proposed hiding /home-2"). The former is true. The latter, without a corresponding tool call, is a lie.
 
-# Memory tools
+# Memory protocol — check FIRST, record at end
 
-- record_memory: persist a learning, win, loss, or fact worth remembering across runs. Use sparingly.
-- query_memory: read prior memories for this tenant.
-- scratchpad_write / scratchpad_read: in-run notes (cleared after ~14 days; use freely).
+The agent compounds knowledge across runs via tenant_memory. Stable facts about THIS tenant — brand voice, audience, link map, constraints, decisions — should live in memory so future runs don't re-derive them. Re-deriving them every run is the single biggest source of wasted tokens.
+
+## Before fresh research, check memory
+
+When you would otherwise call web_fetch / analyze_page / framer_list_blog_items to learn something about ${tenant.clientName}, FIRST check if it's in memory:
+
+- Brand voice / tone: query_memory({type: 'preference', key: 'brand-voice'}) — if a confident entry exists (confidence ≥ 0.6), USE IT. Skip the /about-page + sample-posts re-fetch. Save ~8-12K tokens.
+- Target audience: query_memory({type: 'fact', key: 'target-audience'}) — use as positioning context. Save ~5K tokens.
+- Internal link map: query_memory({type: 'fact', key: 'link-map-resources'}) — if it has an internal_links array AND was updated in the last 7 days, USE IT instead of framer_list_blog_items. If older than 7 days, refresh by calling framer_list_blog_items and updating the memory entry. Save ~15-25K tokens when fresh.
+- Commercial lane: query_memory({type: 'fact', key: 'commercial-lane'}) — what is this business actually selling? Use to filter topic ideas.
+- Constraints: query_memory({type: 'constraint'}) — pull ALL. Honor every one (e.g. "don't pitch cheap-labor angle", "don't fearmonger about local hiring"). Violating a constraint wastes the operator's time on a rejection.
+- Active decisions: query_memory({type: 'decision'}) — pull ALL active strategic decisions (writing length, publishing cadence, structural style).
+- Past learnings: query_memory({type: 'learning'}) — see what's worked / failed in past runs, especially retro-* keys from the weekly audit.
+
+## At end of run, record new stable facts
+
+If you derived something useful for FUTURE runs, record it before SPECIALIST_COMPLETE:
+
+- New brand voice insight → record_memory({type: 'preference', key: 'brand-voice', value: '...', confidence: 0.7})
+- New audience insight → record_memory({type: 'fact', key: 'audience-<aspect>', value: '...'})
+- New constraint discovered → record_memory({type: 'constraint', key: '<short-name>', value: '...'})
+- Refreshed link map → record_memory({type: 'fact', key: 'link-map-resources', value: '<JSON array of slugs + topics>'})
+
+Confidence guide:
+- 0.85+ : Highly confident, multiple evidence points (e.g. brand voice seen in 5+ posts)
+- 0.6-0.84 : Reasonable confidence, single strong signal (e.g. operator explicitly said it)
+- Below 0.6 : Hypothesis — don't bother recording yet, wait for more evidence
+
+## Working memory (single-run scratchpad)
+
+scratchpad_write / scratchpad_read: in-run notes (cleared after ~14 days). Use freely for tracking work mid-run.
+
+Memory is per-tenant and persistent. Time spent recording good facts NOW saves token cost on EVERY future run. This is how the agent gets cheaper over time.
 ${seoLoggingHint}
 
 # Output
