@@ -132,3 +132,33 @@ export async function mutateRunState(
 async function safeRollback(client: PoolClient): Promise<void> {
   try { await client.query('ROLLBACK') } catch { /* swallow */ }
 }
+
+/**
+ * Phase 9b: reverse lookup of a run by (channel, anchor_ts). Used by the
+ * thread-message handler — given a Slack message's channel + thread_ts,
+ * find the run anchored there so we can route feedback.
+ *
+ * Returns null if no run is anchored at that ts (i.e. the thread isn't ours).
+ */
+export async function findRunByAnchorTs(
+  pool:      Pool,
+  channelId: string,
+  anchorTs:  string,
+): Promise<RunRow | null> {
+  const res = await pool.query(
+    `SELECT task_id, tenant_id, channel_id, anchor_ts, state
+       FROM slack_runs
+      WHERE channel_id = $1 AND anchor_ts = $2
+      LIMIT 1`,
+    [channelId, anchorTs],
+  )
+  if (!res.rows.length) return null
+  const r = res.rows[0]
+  return {
+    taskId:    r.task_id,
+    tenantId:  r.tenant_id,
+    channelId: r.channel_id,
+    anchorTs:  r.anchor_ts,
+    state:     r.state as RunState,
+  }
+}

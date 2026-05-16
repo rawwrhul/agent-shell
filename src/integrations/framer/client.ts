@@ -187,6 +187,39 @@ export async function listBlogItems(tenant: TenantConfig): Promise<BlogItemSumma
   })
 }
 
+// Phase 9b: read full content of one blog item by ID. Used by thread
+// feedback to pull the current state of a draft for refinement.
+export interface BlogItemContent {
+  id:        string
+  slug:      string
+  title:     string
+  content:   string             // HTML formattedText
+  date?:     string
+  imageUrl?: string
+}
+
+export async function getBlogItemContent(
+  tenant: TenantConfig,
+  itemId: string,
+): Promise<BlogItemContent> {
+  return withFramerSession(tenant, async (fr) => {
+    const blog = await findBlog(fr)
+    const { titleId, dateId, contentId, imageId } = await resolveBlogFieldIds(blog)
+    const items = await blog.getItems()
+    const item = items.find((i: { id: string }) => i.id === itemId)
+    if (!item) throw new Error(`Blog item ${itemId} not found`)
+    const fd = (item as { fieldData: Record<string, { value: unknown }> }).fieldData
+    return {
+      id:       item.id,
+      slug:     (item as { slug: string }).slug,
+      title:    String(fd[titleId]?.value ?? ''),
+      content:  String(fd[contentId]?.value ?? ''),
+      date:     String(fd[dateId]?.value ?? ''),
+      imageUrl: imageId ? (fd[imageId]?.value as string | undefined) : undefined,
+    }
+  })
+}
+
 // ── Draft + preview (write to data model, NOT to production) ────────────────
 
 export interface BlogPostDraft {

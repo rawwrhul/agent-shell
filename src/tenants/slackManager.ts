@@ -6,6 +6,9 @@ import { getRunHistory } from '../memory/postgres'
 import { getQueueMetrics } from '../queue/producer'
 import { logger } from '../logger'
 import { registerHitlActionHandlers } from '../hitl'
+import { pool } from '../memory/postgres'
+import { findRunByAnchorTs } from '../core/slack/state-store'
+import { handleThreadFeedback } from '../feedback/handler'
 
 /**
  * Map of tenantId → running Slack App instance. Exported so `core/slack`
@@ -74,6 +77,52 @@ export async function startTenantBot(tenant: TenantConfig) {
     })
 
     logger.info('task_triggered_via_slack', { tenantId: tenant.tenantId, taskId: task.id })
+  })
+
+  // ── Phase 9b: thread reply → pitch refinement ──────────────────────────
+  //
+  // When the operator types a message in a thread anchored on one of our
+  // runs, route it through the refinement handler. Bot messages and direct
+  // @-mentions are filtered out so we don't react to ourselves or trigger
+  // double-processing.
+  app.event('message', async ({ event }) => {
+    const e = event as {
+      type:       string
+      channel?:   string
+      user?:      string
+      text?:      string
+      ts?:        string
+      thread_ts?: string
+      subtype?:   string
+      bot_id?:    string
+    }
+    // Filter: only thread replies. Top-level messages and bot messages skip.
+    if (!e.thread_ts || e.thread_ts === e.ts) return
+    if (e.subtype === 'bot_message' || e.bot_id) return
+    if (!e.channel || !e.user || !e.text) return
+    // Filter: @-mentions are handled by app_mention — don't double-process.
+    if (e.text.match(/<@[A-Z0-9]+>/)) return
+    // Filter: thread anchor must belong to one of our runs.
+    const run = await findRunByAnchorTs(pool, e.channel, e.thread_ts)
+    if (!run || run.tenantId !== tenant.tenantId) return
+
+    try {
+      await handleThreadFeedback({
+        app,
+        tenantId:  tenant.tenantId,
+        taskId:    run.taskId,
+        channelId: e.channel,
+        threadTs:  e.thread_ts,
+        feedback:  e.text,
+        userId:    e.user,
+      })
+    } catch (err) {
+      logger.error('thread_feedback_handler_failed', {
+        tenantId: tenant.tenantId,
+        taskId:   run.taskId,
+        err:      String(err).slice(0, 500),
+      })
+    }
   })
 
   // ── /agent command ───────────────────────────────────────────────────────
