@@ -304,7 +304,33 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         messages,
       })
 
-      tokenCount += (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0)
+      // Phase A: account for ALL four token usage fields, scaling cache_read at
+      // 0.10x to match Anthropic's billing (cache hits cost 10% of normal input).
+      // The previous code only summed input_tokens + output_tokens, which silently
+      // ignored cache_creation and cache_read entirely — making it impossible to
+      // tell if caching was working and giving us an undercount of real cost.
+      const usage = response.usage
+      const inputTokens     = usage?.input_tokens                ?? 0
+      const cacheCreation   = usage?.cache_creation_input_tokens ?? 0
+      const cacheRead       = usage?.cache_read_input_tokens     ?? 0
+      const outputTokens    = usage?.output_tokens               ?? 0
+      const billedThisTurn  = inputTokens + cacheCreation + Math.round(cacheRead * 0.10) + outputTokens
+      tokenCount += billedThisTurn
+
+      // Log per-turn breakdown so cache hit ratios are visible in Cloud Run logs.
+      // Healthy caching pattern: cache_creation > 0 on turn 1, cache_read >> input on later turns.
+      logger.info('subagent_tokens', {
+        taskId:           task.id,
+        subTaskId,
+        turn:             turns,
+        input_tokens:     inputTokens,
+        cache_creation:   cacheCreation,
+        cache_read:       cacheRead,
+        output_tokens:    outputTokens,
+        billed_this_turn: billedThisTurn,
+        cumulative:       tokenCount,
+        budget:           tenant.tokenBudgetPerRun,
+      })
 
       if (response.stop_reason === 'end_turn') {
         finalOutput = response.content
@@ -429,7 +455,25 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
           messages: summaryMessages,
         })
 
-        tokenCount += (summaryResponse.usage?.input_tokens ?? 0) + (summaryResponse.usage?.output_tokens ?? 0)
+        // Phase A: same four-field accounting as the main loop.
+        const sUsage          = summaryResponse.usage
+        const sInputTokens    = sUsage?.input_tokens                ?? 0
+        const sCacheCreation  = sUsage?.cache_creation_input_tokens ?? 0
+        const sCacheRead      = sUsage?.cache_read_input_tokens     ?? 0
+        const sOutputTokens   = sUsage?.output_tokens               ?? 0
+        const sBilledThisTurn = sInputTokens + sCacheCreation + Math.round(sCacheRead * 0.10) + sOutputTokens
+        tokenCount += sBilledThisTurn
+        logger.info('subagent_tokens', {
+          taskId:           task.id,
+          subTaskId,
+          turn:             'summary',
+          input_tokens:     sInputTokens,
+          cache_creation:   sCacheCreation,
+          cache_read:       sCacheRead,
+          output_tokens:    sOutputTokens,
+          billed_this_turn: sBilledThisTurn,
+          cumulative:       tokenCount,
+        })
 
         finalOutput = summaryResponse.content
           .filter((b: Anthropic.ContentBlock): b is Anthropic.TextBlock => b.type === 'text')
