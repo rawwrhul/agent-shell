@@ -307,6 +307,26 @@ export async function confirmPublish(
   ) as Promise<ConfirmPublishResult>
 }
 
+// ── Phase 9d: deploy_to_production ──────────────────────────────────────────
+// confirmPublish only stages the change; the live custom domain stays untouched
+// until publishForAgent({ action: 'deploy_to_production' }) fires. This mirrors
+// the two-step behaviour documented in scripts/framer-manual-tests/05-publish.mts.
+export interface DeployToProductionResult {
+  action:      'deploy_to_production'
+  status:      string
+  deployment?: { id: string }
+  hostnames?:  Array<{ hostname: string;  type?: string;  isPrimary?: boolean;  isPublished?: boolean;  deploymentId?: string }>
+  [key:        string]: unknown
+}
+
+export async function deployToProduction(
+  tenant: TenantConfig,
+): Promise<DeployToProductionResult> {
+  return withFramerSession(tenant, async (fr) =>
+    fr.publishForAgent({ action: 'deploy_to_production' })
+  ) as Promise<DeployToProductionResult>
+}
+
 /**
  * Remove a CMS item. Used for rollback on rejection.
  */

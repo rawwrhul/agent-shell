@@ -40,26 +40,111 @@ export async function execFramerConfirmPublish(
       return { ok: false, summary: 'confirmationHash is required', error: 'missing confirmationHash' }
     }
 
-    const result = await fr.confirmPublish(ctx.tenant, input.confirmationHash)
+    // Phase 9e: preflight orphan-prevention check.
+    // Framer's deploy is workspace-wide — anything sitting in staging-ahead-of-
+    // production gets flushed live alongside our draft. Before we commit our
+    // draft to staging, verify staging matches production. If staging is
+    // already ahead, refuse and surface a clean error to the operator.
+    try {
+      const pubInfo = await fr.getPublishInfo(ctx.tenant)
+      const stagingTime = pubInfo?.staging?.deploymentTime ?? 0
+      const productionTime = pubInfo?.production?.deploymentTime ?? 0
+      if (stagingTime > productionTime) {
+        const diffSec = Math.round((stagingTime - productionTime) / 1000)
+        logger.warn('preflight_staging_ahead_of_prod', {
+          tenantId:     ctx.tenant.tenantId,
+          taskId:       ctx.taskId,
+          approvalId:   ctx.approvalId,
+          slug:         input.slug,
+          stagingTime,
+          productionTime,
+          diffSeconds:  diffSec,
+        })
+        return {
+          ok:      false,
+          summary: `Staging has pending changes that pre-date this draft (staging is ${diffSec}s ahead of production). Refusing to deploy until staging matches production — otherwise the pending changes would publish too.`,
+          error:   'STAGING_AHEAD_OF_PRODUCTION',
+          detail: {
+            stagingDeploymentTime:    stagingTime,
+            productionDeploymentTime: productionTime,
+            diffSeconds:              diffSec,
+            action:                   'Open Framer → either publish the pending changes manually (if intended) or revert them (if not). Then retry this approval.',
+          },
+        }
+      }
+    } catch (err) {
+      // Preflight check failed at the API level (network, auth, etc).
+      // Don't block the deploy on infra issues — log and proceed. If staging
+      // really is dirty, the deploy still publishes orphans, but blocking on
+      // every transient API blip is worse than the alternative.
+      logger.warn('preflight_publish_info_failed', {
+        tenantId:   ctx.tenant.tenantId,
+        taskId:     ctx.taskId,
+        approvalId: ctx.approvalId,
+        err:        String(err).slice(0, 300),
+      })
+    }
+
+    // Step 1: commit the draft to staging via confirm_publish.
+    const stagingResult = await fr.confirmPublish(ctx.tenant, input.confirmationHash)
     logger.info('exec_framer_confirm_publish', {
       tenantId:     ctx.tenant.tenantId,
       taskId:       ctx.taskId,
       approvalId:   ctx.approvalId,
-      deploymentId: result.deployment?.id,
+      deploymentId: stagingResult.deployment?.id,
       slug:         input.slug,
     })
 
-    const productionHost = result.hostnames?.find(h => h.type === 'custom' && h.isPublished)?.hostname
+    // Phase 9d: confirm_publish only deploys to staging. The production custom
+    // domain (e.g. tarino.au) stays untouched until deploy_to_production fires.
+    // Without this second call the page is 404 on prod even though the executor
+    // returned success. See client.ts deployToProduction + the framer manual
+    // test 05-publish.mts which documents this two-step behaviour.
+    let prodResult
+    try {
+      prodResult = await fr.deployToProduction(ctx.tenant)
+      logger.info('exec_framer_deploy_to_production', {
+        tenantId:     ctx.tenant.tenantId,
+        taskId:       ctx.taskId,
+        approvalId:   ctx.approvalId,
+        deploymentId: prodResult.deployment?.id,
+        slug:         input.slug,
+      })
+    } catch (err) {
+      // Staging was committed but production deploy failed. This is a
+      // partial-success state — the draft is live on <project>.framer.app
+      // but the operator needs to push to production manually (or we retry).
+      logger.error('exec_framer_deploy_to_production_failed', {
+        tenantId:            ctx.tenant.tenantId,
+        taskId:              ctx.taskId,
+        approvalId:          ctx.approvalId,
+        stagingDeploymentId: stagingResult.deployment?.id,
+        slug:                input.slug,
+        err:                 String(err).slice(0, 500),
+      })
+      return {
+        ok:      false,
+        summary: 'Committed to staging but deploy_to_production failed. Push manually from Framer UI or retry.',
+        error:   String(err).slice(0, 500),
+        detail:  { ...input, stagingResult },
+      }
+    }
+
+    // Use prodResult.hostnames for the production URL — it reflects the deploy
+    // that just happened. Fall back to stagingResult if prodResult is empty.
+    const hostnames = prodResult.hostnames ?? stagingResult.hostnames
+    const productionHost = hostnames?.find(h => h.type === 'custom' && h.isPublished)?.hostname
     const summary = input.title
       ? `Published "${input.title}" to ${productionHost ?? 'production'}`
-      : `Published deployment ${result.deployment?.id ?? '(unknown)'} to ${productionHost ?? 'production'}`
+      : `Published deployment ${prodResult.deployment?.id ?? '(unknown)'} to ${productionHost ?? 'production'}`
 
     return {
       ok:      true,
       summary,
       detail:  {
         ...input,
-        result,
+        stagingResult,
+        prodResult,
         productionUrl: productionHost ? `https://${productionHost}/${input.slug ?? ''}` : undefined,
       },
     }

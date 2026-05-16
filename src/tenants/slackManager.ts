@@ -124,6 +124,18 @@ export async function startTenantBot(tenant: TenantConfig) {
   })
 
   registerHitlActionHandlers(app)
+
+  // Phase 9f: catch Bolt-level errors before they propagate as uncaught.
+  // Logged with tenant context so we can attribute socket noise to the
+  // right tenant when investigating.
+  app.error(async (error: Error) => {
+    logger.error('slack_bolt_error', {
+      tenantId: tenant.tenantId,
+      msg:      error.message,
+      stack:    error.stack?.slice(0, 1500),
+    })
+  })
+
   await app.start()
   apps.set(tenant.tenantId, app)
   logger.info('tenant_bot_started', { tenantId: tenant.tenantId, client: tenant.clientName })
