@@ -43,6 +43,8 @@ import {
   formatDailyDifferentialForPrompt, formatWeeklyDifferentialForPrompt,
 } from './cron-context'
 import { pickForDailyRun } from '../core/opportunity-bank'
+import { createApprovalCardsForSurfaced } from '../core/opportunity-bank/card-builder'
+import { pool as bankPool } from '../memory/postgres'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -109,13 +111,37 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
         })
         if (surfaced.length > 0) {
           differentialBlock += '\n\n## Opportunities surfaced from the bank this run\n\n'
-            + 'These were filed by background runs (audit, future discovery skills) and have just been promoted from the bank into this customer-facing batch. They are now status=surfaced with surfaced_in_run_id stamped to this task. **Include each of them in the `newOpportunities` array of your structured output**, alongside any new ones the specialist discovered inline.\n\n'
+            + 'These were filed by background runs (audit, future discovery skills) and have just been promoted from the bank into this customer-facing batch. They are now status=surfaced with surfaced_in_run_id stamped to this task. **Include each of them in the `newOpportunities` array of your structured output**, alongside any new ones the specialist discovered inline. Each one also has its own approval card created — the operator will see Approve/Reject/Defer buttons inline in your final anchor message.\n\n'
             + surfaced.map((o) =>
                 `- [${o.priority}] ${o.type} (id: ${o.id}): ${o.description}${o.target ? ' — ' + o.target : ''}`
               ).join('\n')
           logger.info('aggregator_surfaced_from_bank', {
             taskId: task.id, tenantId: task.tenantId, count: surfaced.length,
           })
+
+          // Create one approval_requests row per surfaced opportunity.
+          // Aggregator's anchor message renderer picks these up via existing
+          // query and inlines them as Block Kit action buttons.
+          try {
+            const cardResult = await createApprovalCardsForSurfaced({
+              pool:          bankPool,
+              opportunities: surfaced,
+              taskId:        task.id,
+              tenant,
+            })
+            logger.info('approval_cards_for_surfaced_complete', {
+              taskId:             task.id,
+              tenantId:           task.tenantId,
+              cardsCreated:       cardResult.cardsCreated,
+              autoExecuted:       cardResult.autoExecuted,
+              skippedUnsupported: cardResult.skippedUnsupported,
+              errorCount:         cardResult.errors.length,
+            })
+          } catch (err) {
+            logger.warn('approval_cards_for_surfaced_failed', {
+              taskId: task.id, err: String(err).slice(0, 300),
+            })
+          }
         }
       } catch (err) {
         logger.warn('aggregator_bank_surface_failed', {
@@ -500,8 +526,11 @@ If a specialist hit its work budget and reported partial findings:
 }
 
 function buildDailySystem(tenant: TenantConfig): string {
+  const businessBriefBlock = tenant.businessBrief
+    ? `\n# About ${tenant.clientName} — AUTHORITATIVE ground truth, do not infer otherwise from the name\n${tenant.businessBrief}\n`
+    : ''
   return `You are the aggregator for ${tenant.clientName}'s daily ${tenant.agentType} run, built by Causal Growth Science.
-
+${businessBriefBlock}
 The agent has just executed the daily SEO loop. Synthesise the outputs into a single structured daily report.
 
 # Who you're writing for

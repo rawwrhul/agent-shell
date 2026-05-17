@@ -39,6 +39,10 @@ export type OutreachProspectType =
   | 'partnership'
 
 export interface DraftInput {
+  /** Operator-authored business brief — authoritative ground truth for
+   *  what the tenant does. When provided, overrides any LLM inference
+   *  about industry. */
+  businessBrief?: string
   prospectType:  OutreachProspectType
   /** The site we're pitching (e.g. 'techblog.com'). */
   targetSite:    string
@@ -109,8 +113,12 @@ function buildPrompt(input: DraftInput): string {
   const framingFn = TYPE_FRAMING[input.prospectType] ?? GENERIC_FRAMING
   const typeFraming = framingFn(input.targetSite)
 
-  return `You are drafting a real outreach email from ${input.tenantName} to the editor / owner of ${input.targetSite}. The email must read like a thoughtful operator wrote it — not like a generic SEO outreach template. No "I hope this email finds you well." No "I came across your incredible article." No flattery. No hype words.
+  const businessBriefBlock = input.businessBrief
+    ? `\n## About ${input.tenantName} — AUTHORITATIVE, do not infer or pattern-match against the name\n${input.businessBrief}\n\n`
+    : ''
 
+  return `You are drafting a real outreach email from ${input.tenantName} to the editor / owner of ${input.targetSite}. The email must read like a thoughtful operator wrote it — not like a generic SEO outreach template. No "I hope this email finds you well." No "I came across your incredible article." No flattery. No hype words.
+${businessBriefBlock}
 ${typeFraming}
 
 Context from the discovery skill:

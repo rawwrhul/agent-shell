@@ -54,6 +54,16 @@ export interface TenantConfig {
    *  honour this — they don't even file opportunities of disabled types. */
   disabledOpportunityTypes?: string[]
 
+  /** Operator-authored 2-4 sentence description of what this tenant
+   *  does, who they serve, how they're positioned. Injected into every
+   *  LLM call (drafter, aggregator, subagent) as authoritative ground
+   *  truth. Eliminates LLM industry-guessing failures. */
+  businessBrief?: string
+
+  /** Slack user ID of the operator to tag on approval cards that need
+   *  human attention. Format: U07A1B2C3DE (no @). */
+  operatorSlackUserId?: string
+
   /** Per-tenant cron timezone override. Default Australia/Sydney. */
   cronTimezone?:      string
 
@@ -87,6 +97,8 @@ export interface TenantRow {
   target_domain:                string | null   // R3
   competitor_domains:           string[] | null // R3
   disabled_opportunity_types:   string[] | null // SEO-5
+  business_brief:               string | null   // Business-brief bundle
+  operator_slack_user_id:       string | null   // Business-brief bundle
   cron_timezone:                string | null   // R3
   secret_slack_bot_token:       string
   secret_slack_app_token:       string

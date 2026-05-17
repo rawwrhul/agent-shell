@@ -105,6 +105,7 @@ export async function runBacklinkProspectCycle(tenantId: string): Promise<Prospe
     let draft: Awaited<ReturnType<typeof draftOutreach>> | null = null
     try {
       draft = await draftOutreach({
+        businessBrief: tenant.businessBrief,
         prospectType: 'backlink_gap',
         targetSite:   p.sourceDomain,
         targetUrl:    p.sourceUrl,

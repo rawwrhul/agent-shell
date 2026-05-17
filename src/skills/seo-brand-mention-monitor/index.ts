@@ -166,6 +166,7 @@ export async function runBrandMentionScanCycle(tenantId: string): Promise<Mentio
     let draft: Awaited<ReturnType<typeof draftOutreach>> | null = null
     try {
       draft = await draftOutreach({
+        businessBrief: tenant.businessBrief,
         prospectType: 'unlinked_mention',
         targetSite:   c.sourceDomain,
         targetUrl:    c.sourceUrl,

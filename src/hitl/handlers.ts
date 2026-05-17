@@ -16,6 +16,7 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { onApprovalResolved } from '../memory/pipeline-events';
 import { handleRejectionOnOpportunity } from '../core/opportunity-bank';
+import { markProspectSent, canSendToday } from '../core/outreach-safety';
 import {
   getApproval,
   resolveApproval,
@@ -60,6 +61,31 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
   if (!resolved) return;
 
   await editMessageToResolved(ctx, resolved, 'approved');
+
+  // Bundle: business-brief-and-cards. Approve of an outreach card means
+  // the operator has (or will) send the drafted email from their inbox.
+  // We mark the outreach_queue row as 'sent' and enforce the daily cap.
+  if (approval.toolName === 'outreach_send_mailto') {
+    try {
+      const ti = approval.toolInput as { outreach_queue_id?: string; target_site?: string }
+      const cap = await canSendToday({ tenantId: approval.tenantId })
+      if (!cap.allowed) {
+        logger.warn('outreach_approve_daily_cap_hit', {
+          approvalId: ctx.approvalId, tenantId: approval.tenantId,
+          sentToday: cap.sentToday, cap: cap.cap,
+        })
+        // Approval already resolved — log it. Operator can manually
+        // reverse via SQL if they want. For v1, soft warning only.
+      }
+      if (ti.outreach_queue_id) {
+        await markProspectSent({ outreachQueueId: ti.outreach_queue_id })
+      }
+    } catch (err) {
+      logger.warn('outreach_approve_mark_sent_failed', {
+        approvalId: ctx.approvalId, err: String(err).slice(0, 300),
+      })
+    }
+  }
 
   // Mirror to Sheet (best-effort) so the persistent record stays in sync.
   await mirrorResolutionToSheet(resolved, 'approved', ctx.slackUserId).catch(() => {

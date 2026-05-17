@@ -118,6 +118,8 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     competitorDomains:         row.competitor_domains ?? undefined,
     disabledOpportunityTypes:  row.disabled_opportunity_types ?? undefined,
     cronTimezone:              row.cron_timezone ?? undefined,
+    businessBrief:             row.business_brief ?? undefined,
+    operatorSlackUserId:       row.operator_slack_user_id ?? undefined,
   }
 }
 
