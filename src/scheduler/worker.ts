@@ -167,11 +167,19 @@ function buildPromptForRunKind(kind: RunKind, clientName: string): string {
     // not to passively report state. The subagent's system prompt
     // (task_intent='daily_generation') has the full playbook + writing-style
     // guide. Keep the user-message short so it doesn't overshadow the system.
-    return `Morning generation run for ${clientName}. Find work for the operator to review.
+    return `Morning generation run for ${clientName}.
 
-Produce 2-5 concrete changes the operator can approve, plus 3-5 leads for the backlog. Each "change" is something you've already drafted (with a previewable URL), not a vague recommendation. Each lead is a specific opportunity, not a generic suggestion.
+Your job today is DRAFTING, not DISCOVERY. Background runs already populated the opportunity bank with audit findings, backlink prospects, and unlinked brand mentions — the aggregator will surface those automatically from seo_opportunities into this run's Slack post. Do not re-run audits, do not re-fetch competitor backlinks, do not re-scan for brand mentions. Those are already done and waiting in the table.
 
-Areas to look at: pages worth writing that competitors rank for, internal-linking gaps between existing pages, additive copy or meta improvements on existing pages, and backlink opportunities from competitor analysis. Use what fits today — you don't have to hit every area.
+What to draft inline this run (in priority order):
+
+1. ONE new blog post on a topic gap. Find a keyword cluster competitors rank for that ${clientName} doesn't have a page for, draft the full post, file via propose_action with toolName='framer_create_and_publish_blog_post'. This is the primary deliverable.
+
+2. 2-3 quick on-page improvements for existing pages. Concrete copy tweaks, meta-description rewrites, schema additions, or internal-link insertions you spot while reviewing the site. File each via propose_action with toolName='manual_operator_task' and a clear instruction including the target page + the exact change.
+
+3. Refine bank outreach drafts if you spot one that needs work. The backlink_prospector skill drafts a generic pitch for each prospect; if you can write a stronger version for a specific high-value target, do so and file via propose_action with toolName='manual_operator_task' explaining the upgrade.
+
+Keep the run bounded: one blog post + 2-3 quick fixes + maybe one outreach refinement. Do NOT attempt multiple blog posts in a single run; the token budget will not support it. Lean on the bank for everything that's already been discovered.
 
 Snapshot today's baseline metrics at some point so we have continuity for tomorrow.`;
   }
