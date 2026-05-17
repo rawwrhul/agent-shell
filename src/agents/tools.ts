@@ -132,20 +132,48 @@ async function runCommand(command: string, cwd: string): Promise<string> {
 }
 
 async function webSearch(query: string, maxResults: number): Promise<string> {
-  // Uses Anthropic's web search via the API — simple implementation
-  // For production, wire in a dedicated search API (Serper, Brave, etc.)
+  // Two-layer timeout — same pattern as webFetch. AbortSignal on fetch()
+  // covers network handshake, Promise.race covers res.json() body read
+  // in case the server stalls mid-stream.
+  const controller   = new AbortController()
+  const networkTimer = setTimeout(() => controller.abort(), 15_000)
+
+  let res: Response
   try {
-    const res = await fetch(
+    res = await fetch(
       `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}`,
-      { headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip' } }
+      {
+        headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip' },
+        signal:  controller.signal,
+      }
     )
-    if (!res.ok) return `Search failed: ${res.status}. Configure BRAVE_API_KEY for web search.`
-    const data = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } }
-    const results = data?.web?.results ?? []
-    return results.map((r, i) => `${i+1}. ${r.title}\n   ${r.url}\n   ${r.description}`).join('\n\n') || 'No results found'
-  } catch {
-    return 'Web search unavailable — add BRAVE_API_KEY to environment or wire in a search provider'
+  } catch (err: any) {
+    clearTimeout(networkTimer)
+    return `[web_search network error: ${String(err?.message ?? err).slice(0, 200)}]`
   }
+
+  if (!res.ok) {
+    clearTimeout(networkTimer)
+    return `Search failed: HTTP ${res.status}. Configure BRAVE_API_KEY for web search.`
+  }
+
+  let data: any
+  try {
+    data = await Promise.race([
+      res.json(),
+      new Promise<never>((_, reject) => setTimeout(() => {
+        controller.abort()
+        reject(new Error('body_read_timeout'))
+      }, 15_000)),
+    ])
+  } catch {
+    clearTimeout(networkTimer)
+    return `[web_search body timeout after 15s for query: ${query.slice(0, 80)}]`
+  }
+  clearTimeout(networkTimer)
+
+  const results = data?.web?.results ?? []
+  return results.map((r: any, i: number) => `${i+1}. ${r.title}\n   ${r.url}\n   ${r.description}`).join('\n\n') || 'No results found'
 }
 
 async function webFetch(url: string): Promise<string> {
