@@ -53,6 +53,20 @@ function pool(): Pool {
   return _pool
 }
 
+function summariseToolInput(tool: string, input: any): string {
+  try {
+    if (!input || typeof input !== 'object') return ''
+    if (tool === 'web_fetch' || tool === 'web_search') return String(input.url ?? input.query ?? '').slice(0, 200)
+    if (tool === 'read_file' || tool === 'write_file' || tool === 'list_directory') return String(input.path ?? '').slice(0, 200)
+    if (tool === 'run_command') return String(input.command ?? '').slice(0, 200)
+    if (tool === 'propose_action') return String(input.action_type ?? input.opportunity_type ?? '').slice(0, 80)
+    for (const v of Object.values(input)) {
+      if (typeof v === 'string') return v.slice(0, 200)
+    }
+    return ''
+  } catch { return '' }
+}
+
 export async function preToolUseHook(
   event: ToolUseEvent,
   ctx: HookContext
@@ -65,6 +79,10 @@ export async function preToolUseHook(
     tool:        event.toolName,
     risk:        risk.level,
     autoApprove: risk.autoApprove,
+    // Short target string for diagnostics — URL for web_fetch, path for
+    // file ops, first chars of cmd for run_command. Without this a
+    // tool-call hang is invisible in logs.
+    target:      summariseToolInput(event.toolName, event.toolInput),
   })
 
   await trace({

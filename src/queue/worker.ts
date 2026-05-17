@@ -56,16 +56,23 @@ const worker = new Worker<AgentJob>(
     try {
       switch (jobType) {
         case 'orchestrate':
-          await runOrchestrator(task, tenant)
+          // 5 min cap: planning is normally <1 min. If we exceed, something
+          // is wrong (Anthropic stalled, DB hang, etc.) — fail fast.
+          await withJobWatchdog(() => runOrchestrator(task, tenant), 5 * 60_000, 'orchestrator', task.id)
           break
 
         case 'subagent':
           if (!subTaskId) throw new Error('subTaskId missing on subagent job')
-          await runSubagent(task, subTaskId, tenant)
+          // 12 min cap: clean specialists finish in ~5 min. 12 gives 2.3x
+          // headroom for slow LLM responses or extra tool calls, but caps
+          // the silent-hang failure mode at a bounded burn.
+          await withJobWatchdog(() => runSubagent(task, subTaskId, tenant), 12 * 60_000, 'subagent', task.id)
           break
 
         case 'aggregate':
-          await runAggregator(task, tenant)
+          // 5 min cap: synthesis LLM is already 3-min capped internally,
+          // plus surfacing + Slack render. 5 min is the outer envelope.
+          await withJobWatchdog(() => runAggregator(task, tenant), 5 * 60_000, 'aggregator', task.id)
           break
 
         default:
@@ -98,6 +105,37 @@ const worker = new Worker<AgentJob>(
     maxStalledCount:  0,
   }
 )
+
+/**
+ * Wraps a job-handler call with a hard total-execution timeout. If the
+ * inner promise doesn't resolve in time, this rejects so BullMQ's catch
+ * marks the job failed. Note: the underlying work may continue running
+ * in the background until it either finishes naturally or the container
+ * recycles — Node can't force-cancel a hung Promise. The point here is
+ * to free the job slot and update Slack to a failed state rather than
+ * leaving the system stuck on "running" forever.
+ */
+async function withJobWatchdog<T>(
+  fn: () => Promise<T>,
+  ms: number,
+  label: string,
+  taskId: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          logger.error('job_watchdog_fired', { label, taskId, afterMs: ms })
+          reject(new Error(`watchdog_timeout_${label}_after_${ms}ms`))
+        }, ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 worker.on('completed', job => logger.info('job_done', { jobId: job.id, type: job.data.jobType }))
 worker.on('failed', (job, err) => logger.error('job_err', { jobId: job?.id, type: job?.data?.jobType, err: err.message }))

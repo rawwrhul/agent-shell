@@ -149,8 +149,44 @@ async function webSearch(query: string, maxResults: number): Promise<string> {
 }
 
 async function webFetch(url: string): Promise<string> {
-  const res  = await fetch(url, { headers: { 'User-Agent': 'CGS-Agent/2.0' }, signal: AbortSignal.timeout(15000) })
-  const text = await res.text()
+  // Two-layer timeout. AbortSignal in fetch() covers the network handshake,
+  // but in some Node versions it doesn't reliably propagate into res.text()
+  // for chunked-encoding/keep-alive responses that never close. The outer
+  // Promise.race is the belt-and-braces guard.
+  const controller    = new AbortController()
+  const networkTimer  = setTimeout(() => controller.abort(), 15_000)
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      headers: { 'User-Agent': 'CGS-Agent/2.0' },
+      signal:  controller.signal,
+    })
+  } catch (err: any) {
+    clearTimeout(networkTimer)
+    return `[web_fetch network error for ${url}: ${String(err?.message ?? err).slice(0, 200)}]`
+  }
+
+  if (!res.ok) {
+    clearTimeout(networkTimer)
+    return `[web_fetch HTTP ${res.status} for ${url}]`
+  }
+
+  let text: string
+  try {
+    text = await Promise.race([
+      res.text(),
+      new Promise<string>((_, reject) => setTimeout(() => {
+        controller.abort()
+        reject(new Error('body_read_timeout'))
+      }, 30_000)),
+    ])
+  } catch {
+    clearTimeout(networkTimer)
+    return `[web_fetch body timeout after 30s for ${url}]`
+  }
+  clearTimeout(networkTimer)
+
   // Strip HTML tags for cleaner context
   const clean = text.replace(/<script[\s\S]*?<\/script>/gi, '')
                     .replace(/<style[\s\S]*?<\/style>/gi, '')
