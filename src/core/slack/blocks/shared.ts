@@ -239,7 +239,15 @@ export function stripMarkdown(s: string): string {
     .replace(/`([^`\n]+)`/g, '$1');             // `code` → code
 }
 
-export function formatTime(d: Date, tz = 'Australia/Sydney'): string {
+// Defensive coercion: the LLM returns dates as JSON strings, not Date
+// objects. TypeScript can't catch this at compile time because the
+// types claim Date — so we coerce at the call site.
+function toDate(d: Date | string): Date {
+  return d instanceof Date ? d : new Date(d)
+}
+
+export function formatTime(d: Date | string, tz = 'Australia/Sydney'): string {
+  d = toDate(d)
   return new Intl.DateTimeFormat('en-AU', {
     hour: '2-digit',
     minute: '2-digit',
@@ -248,7 +256,8 @@ export function formatTime(d: Date, tz = 'Australia/Sydney'): string {
   }).format(d);
 }
 
-export function formatDate(d: Date, tz = 'Australia/Sydney'): string {
+export function formatDate(d: Date | string, tz = 'Australia/Sydney'): string {
+  d = toDate(d)
   return new Intl.DateTimeFormat('en-AU', {
     weekday: 'short',
     day: 'numeric',
@@ -257,7 +266,8 @@ export function formatDate(d: Date, tz = 'Australia/Sydney'): string {
   }).format(d);
 }
 
-export function formatRelative(d: Date, now: Date = new Date()): string {
+export function formatRelative(d: Date | string, now: Date = new Date()): string {
+  d = toDate(d)
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.round(diffMs / 60_000);
   if (diffMin < 1) return 'just now';

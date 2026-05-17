@@ -255,7 +255,8 @@ function buildFooterParts(report: DailyRunReport): string[] {
   return parts;
 }
 
-function formatNextRunLabel(d: Date): string {
+function formatNextRunLabel(d: Date | string): string {
+  d = d instanceof Date ? d : new Date(d)
   const now = new Date();
   const diffHr = (d.getTime() - now.getTime()) / 3_600_000;
 
