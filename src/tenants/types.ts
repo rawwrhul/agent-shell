@@ -50,6 +50,10 @@ export interface TenantConfig {
   /** Optional list of competitor domains. Used by competitor analyst. */
   competitorDomains?: string[]
 
+  /** Opportunity types this tenant has opted out of. Discovery skills
+   *  honour this — they don't even file opportunities of disabled types. */
+  disabledOpportunityTypes?: string[]
+
   /** Per-tenant cron timezone override. Default Australia/Sydney. */
   cronTimezone?:      string
 
@@ -82,6 +86,7 @@ export interface TenantRow {
   is_active:                    boolean
   target_domain:                string | null   // R3
   competitor_domains:           string[] | null // R3
+  disabled_opportunity_types:   string[] | null // SEO-5
   cron_timezone:                string | null   // R3
   secret_slack_bot_token:       string
   secret_slack_app_token:       string

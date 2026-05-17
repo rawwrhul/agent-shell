@@ -220,3 +220,37 @@ export async function competitorsDomain(
   return r.tasks?.[0]?.result?.[0]?.items ?? []
 }
 
+// ── Backlinks list (SEO-5) ────────────────────────────────────────────────
+
+export interface BacklinkListItem {
+  source_url:    string
+  source_domain: string
+  target_url?:   string
+  anchor?:       string
+  source_rank?:  number
+  dofollow?:     boolean
+  first_seen?:   string
+  last_seen?:    string
+}
+
+/**
+ * Pulls actual backlink rows (not just summary counts). Used by SEO-5
+ * backlink prospector for both inventory refresh and competitor gap diff.
+ * Returns up to `limit` rows ordered by source rank descending.
+ */
+export async function backlinksList(
+  tenant: TenantConfig,
+  args:   { target: string; limit?: number },
+): Promise<BacklinkListItem[]> {
+  type R = { tasks?: Array<{ result?: Array<{ items?: BacklinkListItem[] }> }> }
+  const r = await call<R>(tenant, '/v3/backlinks/backlinks/live', [{
+    target:              args.target,
+    limit:               args.limit ?? 100,
+    mode:                'as_is',          // raw rows, not domain-rolled-up
+    include_subdomains:  true,
+    order_by:            ['rank,desc'],
+    filters:             [['dofollow', '=', true]],
+  }])
+  return r.tasks?.[0]?.result?.[0]?.items ?? []
+}
+

@@ -74,14 +74,23 @@ export async function startTenantBot(tenant: TenantConfig) {
     // facing only so you know the trigger landed; check Cloud Run logs
     // and DB for actual progress.
     if (prompt.toLowerCase().includes('secretchrontest')) {
+      // Optional runKind argument: 'secretchrontest backlink' or
+      // 'secretchrontest mention'. Defaults to 'seo_audit'.
+      const cronArgMatch = prompt.toLowerCase().match(/secretchrontest\s+(\w+)/)
+      const requested = cronArgMatch?.[1] ?? ''
+      const runKind: 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' =
+        (requested === 'backlink' || requested === 'backlink_prospect') ? 'backlink_prospect' :
+        (requested === 'mention'  || requested === 'brand_mention_scan')  ? 'brand_mention_scan' :
+        'seo_audit'
       logger.info('adhoc_audit_trigger_received', {
         tenantId: tenant.tenantId,
         userId:   event.user ?? 'unknown',
+        runKind,
       })
       try {
-        await enqueueOneOffRun({ tenantId: tenant.tenantId, runKind: 'seo_audit' })
+        await enqueueOneOffRun({ tenantId: tenant.tenantId, runKind })
         await say({
-          text:      `:eyes: Trigger received. Queued one-off \`seo_audit\` cycle for *${tenant.clientName}* — identical code path to the Saturday-midnight cron. Watch Cloud Run logs for \`seo_audit_cycle_completed\`. No further Slack output from this command.`,
+          text:      `:eyes: Trigger received. Queued one-off \`${runKind}\` cycle for *${tenant.clientName}* — identical code path to the corresponding cron. Watch Cloud Run logs for \`${runKind}_cycle_completed\` (or the _from_worker variant). No further Slack output from this command.`,
           thread_ts: event.ts,
         })
       } catch (err) {

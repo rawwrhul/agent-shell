@@ -111,6 +111,13 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     gsc_site_url:       row.gsc_site_url ?? undefined,
     ga4_property_id:    row.ga4_property_id ?? undefined,
     framer_project_url: row.framer_project_url ?? undefined,
+    // R3 / SEO-5 fields previously missing from the resolver — added for
+    // discovery skills that read tenant.targetDomain / competitorDomains /
+    // disabledOpportunityTypes.
+    targetDomain:              row.target_domain ?? undefined,
+    competitorDomains:         row.competitor_domains ?? undefined,
+    disabledOpportunityTypes:  row.disabled_opportunity_types ?? undefined,
+    cronTimezone:              row.cron_timezone ?? undefined,
   }
 }
 

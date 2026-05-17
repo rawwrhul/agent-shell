@@ -5,6 +5,7 @@ import { runPhase8Migration } from './migrations/phase8-two-stage-approval'
 import { runSeo1CrawlerMigration } from './migrations/seo-1-crawler'
 import { runSeo2AuditorMigration } from './migrations/seo-2-auditor'
 import { runOpportunityBankMigration } from './migrations/opportunity-bank'
+import { runSeo5BacklinksMigration }   from './migrations/seo-5-backlinks'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -298,6 +299,7 @@ async function migrate() {
   await runSeo1CrawlerMigration(pool)
   await runSeo2AuditorMigration(pool)
   await runOpportunityBankMigration(pool)
+  await runSeo5BacklinksMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

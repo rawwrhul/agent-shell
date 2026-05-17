@@ -16,6 +16,14 @@ export const DEFAULT_SCHEDULES = {
     cronExpr: '0 0 * * 6',          // midnight Saturday (Sydney)
     timezone: 'Australia/Sydney',
   },
+  backlink_prospect: {
+    cronExpr: '0 2 * * 0',          // 2am Sunday (Sydney) — SEO-5
+    timezone: 'Australia/Sydney',
+  },
+  brand_mention_scan: {
+    cronExpr: '0 4 * * 0',          // 4am Sunday (Sydney) — SEO-5
+    timezone: 'Australia/Sydney',
+  },
 } as const
 
 /**

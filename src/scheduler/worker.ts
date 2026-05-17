@@ -28,6 +28,8 @@ import {
 import { recordScheduleFired } from './index';
 import { getTenant } from '../tenants/registry'
 import { runFullAuditCycle } from '../skills/seo-technical-auditor';
+import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
+import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
 import { enqueueTask } from '../queue/producer';
 import type { TaskTrigger } from '../types';
 
@@ -100,6 +102,36 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
       logger.info('seo_audit_cycle_completed', { tenantId });
     } catch (err) {
       logger.error('seo_audit_cycle_failed', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // SEO-5 discovery cycles — same pattern as seo_audit. Silent (no Slack
+  // output); the next daily run picks up the opportunities they file.
+  if (runKind === 'backlink_prospect') {
+    logger.info('backlink_prospect_cycle_starting_from_worker', { tenantId });
+    try {
+      await runBacklinkProspectCycle(tenantId);
+      logger.info('backlink_prospect_cycle_completed_from_worker', { tenantId });
+    } catch (err) {
+      logger.error('backlink_prospect_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  if (runKind === 'brand_mention_scan') {
+    logger.info('brand_mention_scan_cycle_starting_from_worker', { tenantId });
+    try {
+      await runBrandMentionScanCycle(tenantId);
+      logger.info('brand_mention_scan_cycle_completed_from_worker', { tenantId });
+    } catch (err) {
+      logger.error('brand_mention_scan_cycle_failed_from_worker', {
         tenantId, err: String(err).slice(0, 500),
       });
     }
