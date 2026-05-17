@@ -10,6 +10,7 @@ import { pool } from '../memory/postgres'
 import { findRunByAnchorTs } from '../core/slack/state-store'
 import { handleThreadFeedback } from '../feedback/handler'
 import { enqueueOneOffRun } from '../scheduler'
+import { matchAdHocRequest, pickForAdHoc } from '../core/opportunity-bank'
 
 /**
  * Map of tenantId → running Slack App instance. Exported so `core/slack`
@@ -94,6 +95,49 @@ export async function startTenantBot(tenant: TenantConfig) {
         })
       }
       return
+    }
+
+    // ── Ad-hoc bank check ───────────────────────────────────────────────
+    // If the prompt is asking about an opportunity type we track and the
+    // bank has enough matching rows, serve from the bank without spinning
+    // up a fresh discovery run. Otherwise fall through to the normal
+    // enqueueTask flow.
+    try {
+      const matched = await matchAdHocRequest({ prompt })
+      if (matched && matched.types.length > 0) {
+        const banked = await pickForAdHoc({
+          tenantId: tenant.tenantId,
+          types:    matched.types,
+          limit:    5,
+        })
+        if (banked.length >= 3) {
+          logger.info('adhoc_served_from_bank', {
+            tenantId: tenant.tenantId,
+            types:    matched.types,
+            count:    banked.length,
+          })
+          const lines = banked.map((o, i) =>
+            `${i + 1}. [${o.priority}] ${o.type}${o.target ? ' — ' + o.target : ''}\n   ${o.description}`
+          ).join('\n\n')
+          await say({
+            text: `Pulled ${banked.length} matching opportunities from the bank (no fresh discovery needed):\n\n${lines}\n\n_If you want a fresh search anyway, rephrase with explicit \`run a discovery\` wording._`,
+            thread_ts: event.ts,
+          })
+          return
+        }
+        // Bank too thin — fall through to fresh discovery below.
+        logger.info('adhoc_bank_too_thin_falling_through', {
+          tenantId: tenant.tenantId,
+          types:    matched.types,
+          banked:   banked.length,
+        })
+      }
+    } catch (err) {
+      // Classifier or bank query failed — fall through to normal flow.
+      logger.warn('adhoc_bank_check_failed', {
+        tenantId: tenant.tenantId,
+        err:      String(err).slice(0, 300),
+      })
     }
 
     const task = await enqueueTask({

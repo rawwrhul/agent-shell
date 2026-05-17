@@ -42,6 +42,7 @@ import {
   loadDailyDifferential, loadWeeklyDifferential,
   formatDailyDifferentialForPrompt, formatWeeklyDifferentialForPrompt,
 } from './cron-context'
+import { pickForDailyRun } from '../core/opportunity-bank'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -95,6 +96,32 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     if (trigger === 'cron-daily') {
       const diff = await loadDailyDifferential(task.tenantId)
       differentialBlock = formatDailyDifferentialForPrompt(diff)
+
+      // ── Bank consumption ────────────────────────────────────────────
+      // Pick a diverse batch from the opportunity bank and atomically
+      // transition them new → surfaced. The LLM is told about them
+      // below so it includes them in 'newOpportunities' of its output.
+      // Best-effort: any failure falls back to inline-only behaviour.
+      try {
+        const surfaced = await pickForDailyRun({
+          tenantId: task.tenantId,
+          runId:    task.id,
+        })
+        if (surfaced.length > 0) {
+          differentialBlock += '\n\n## Opportunities surfaced from the bank this run\n\n'
+            + 'These were filed by background runs (audit, future discovery skills) and have just been promoted from the bank into this customer-facing batch. They are now status=surfaced with surfaced_in_run_id stamped to this task. **Include each of them in the `newOpportunities` array of your structured output**, alongside any new ones the specialist discovered inline.\n\n'
+            + surfaced.map((o) =>
+                `- [${o.priority}] ${o.type} (id: ${o.id}): ${o.description}${o.target ? ' — ' + o.target : ''}`
+              ).join('\n')
+          logger.info('aggregator_surfaced_from_bank', {
+            taskId: task.id, tenantId: task.tenantId, count: surfaced.length,
+          })
+        }
+      } catch (err) {
+        logger.warn('aggregator_bank_surface_failed', {
+          taskId: task.id, err: String(err).slice(0, 300),
+        })
+      }
       logger.info('aggregator_daily_differential_loaded', {
         taskId: task.id, materialActivity: diff.materialActivityToday, firstRun: diff.firstRun,
       })

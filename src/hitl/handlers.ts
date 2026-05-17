@@ -15,6 +15,7 @@ import { Pool } from 'pg';
 import { config } from '../config';
 import { logger } from '../logger';
 import { onApprovalResolved } from '../memory/pipeline-events';
+import { handleRejectionOnOpportunity } from '../core/opportunity-bank';
 import {
   getApproval,
   resolveApproval,
@@ -118,6 +119,14 @@ export async function handleReject(ctx: ActionContext, rejectionReason?: string)
     status:          'rejected',
     resolvedBy:      ctx.slackUserId,
     rejectionReason: rejectionReason,
+  })
+
+  // Opportunity bank: if this approval was bank-linked, decide whether
+  // to reshape (substantive feedback → new variant) or terminally reject
+  // (flat rejection → kill). Best-effort; never blocks the HITL flow.
+  void handleRejectionOnOpportunity({
+    approvalId:      ctx.approvalId,
+    rejectionReason: rejectionReason ?? null,
   })
 }
 
