@@ -60,8 +60,11 @@ export const DIVERSITY_CAP_PER_TYPE = 2
 /** After this many reshape iterations on the same lineage, dismiss instead. */
 export const RESHAPE_MAX_DEPTH = 3
 
-/** Default size of the daily run's surface batch. */
-export const DEFAULT_SURFACE_LIMIT = 7
+/** Default size of the daily run's surface batch. Reduced from 7 to 5
+ *  to keep the aggregator's LLM synthesis input bounded — 7 verbose
+ *  approval-card riskReasons + specialist propose_actions was pushing
+ *  context size enough to cause slow LLM responses + stall risk. */
+export const DEFAULT_SURFACE_LIMIT = 5
 
 /**
  * Per-type score multipliers applied on top of PRIORITY_WEIGHTS in

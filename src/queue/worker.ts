@@ -89,6 +89,13 @@ const worker = new Worker<AgentJob>(
     connection,
     concurrency: 8,  // Enough to run multiple subagents in parallel across tenants
     limiter: { max: 20, duration: 60_000 },
+    // Aggregator LLM calls take 60-90s. Default lockDuration (30s) was
+    // expiring mid-call → BullMQ marked jobs stalled → reassigned → 2-3x
+    // parallel aggregator instances. 5min gives comfortable headroom.
+    lockDuration:     300_000,
+    // Don't auto-recover from "stalled" detection — if a job genuinely
+    // failed to renew its lock, treat it as failed rather than retrying.
+    maxStalledCount:  0,
   }
 )
 

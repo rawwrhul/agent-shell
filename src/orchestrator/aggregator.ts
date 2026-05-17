@@ -171,6 +171,12 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
       // outputs (in messages) vary per run and stay uncached.
       system:     cachedSystem(systemPrompt),
       messages:   [{ role: 'user', content: userPrompt }],
+    }, {
+      // Explicit 3-min timeout. Default SDK timeout is 10min which is
+      // longer than BullMQ's default 30s lockDuration — caused silent
+      // hangs + retry cascades. 180s fits comfortably under the new
+      // 5-min lockDuration set in src/queue/worker.ts.
+      timeout: 180_000,
     })
 
     const rawText = response.content
@@ -206,9 +212,17 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
 
     await endTrace(sessionId, 'success', `Final report generated — ${rawText.length} chars`)
   } catch (err) {
-    logger.error('aggregator_failed', { taskId: task.id, err: String(err) })
-    await presenter.failRun(task.id, String(err).slice(0, 400))
-    await endTrace(sessionId, 'error')
+    logger.error('aggregator_failed', { taskId: task.id, err: String(err).slice(0, 500) })
+    // Wrap failRun + endTrace in their own timeouts so a hung Slack/
+    // Langfuse call can't trap us in the failure path indefinitely.
+    await Promise.race([
+      presenter.failRun(task.id, String(err).slice(0, 400)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('failrun_timeout')), 30_000)),
+    ]).catch((failErr) => logger.warn('aggregator_failrun_failed', { taskId: task.id, err: String(failErr).slice(0, 200) }))
+    await Promise.race([
+      endTrace(sessionId, 'error'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('endtrace_timeout')), 10_000)),
+    ]).catch(() => { /* swallow — already in failure path */ })
     throw err
   }
 }

@@ -61,7 +61,14 @@ export async function enqueueSubagentJob(params: { task: AgentTask; subTaskId: s
 export async function enqueueAggregationJob(task: AgentTask) {
   await agentQueue.add('aggregate',
     { jobType: 'aggregate', task } as AgentJob,
-    { jobId: `aggregate-${task.id}`, priority: 1 })
+    {
+      jobId:    `aggregate-${task.id}`,
+      priority: 1,
+      // Aggregate is non-idempotent (posts to Slack, creates approval
+      // cards). Don't retry on failure — the timeout + failRun path
+      // updates Slack to show the failure state.
+      attempts: 1,
+    })
   logger.info('aggregation_enqueued', { taskId: task.id })
 }
 
