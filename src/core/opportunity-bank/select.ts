@@ -21,6 +21,7 @@ import { logger } from '../../logger'
 import {
   Opportunity, Priority, OppStatus,
   PRIORITY_WEIGHTS, FRESHNESS_WINDOW_DAYS, DIVERSITY_CAP_PER_TYPE,
+  TYPE_BOOSTS, TYPE_DIVERSITY_CAPS,
   DEFAULT_SURFACE_LIMIT, ACTIONABLE_STATUSES,
 } from './types'
 
@@ -157,7 +158,8 @@ export function scoreAndPick(
     const ageMs = now - c.createdAt.getTime()
     // 1.0 at age=0, 0.5 at age=windowMs, clamped.
     const ageBoost = Math.max(0.5, 1 - (0.5 * ageMs / windowMs))
-    const score = (PRIORITY_WEIGHTS[c.priority] ?? 1) * ageBoost
+    const typeBoost = TYPE_BOOSTS[c.type] ?? 1.0
+    const score = (PRIORITY_WEIGHTS[c.priority] ?? 1) * ageBoost * typeBoost
     return { opp: c, score }
   })
 
@@ -172,7 +174,8 @@ export function scoreAndPick(
   for (const { opp } of scored) {
     if (picked.length >= limit) break
     const currentCount = typeCounts.get(opp.type) ?? 0
-    if (currentCount >= capPerType) continue
+    const effectiveCap = TYPE_DIVERSITY_CAPS[opp.type] ?? capPerType
+    if (currentCount >= effectiveCap) continue
     picked.push(opp)
     typeCounts.set(opp.type, currentCount + 1)
   }
