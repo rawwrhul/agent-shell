@@ -9,6 +9,7 @@ import { registerHitlActionHandlers } from '../hitl'
 import { pool } from '../memory/postgres'
 import { findRunByAnchorTs } from '../core/slack/state-store'
 import { handleThreadFeedback } from '../feedback/handler'
+import { enqueueOneOffRun } from '../scheduler'
 
 /**
  * Map of tenantId → running Slack App instance. Exported so `core/slack`
@@ -59,6 +60,39 @@ export async function startTenantBot(tenant: TenantConfig) {
         text: `Hi! Mention me with a task. Example:\n\`@bot run an SEO audit on example.com\``,
         thread_ts: event.ts,
       })
+      return
+    }
+
+    // ── Secret operator command: cron simulator ─────────────────────────
+    // Enqueues a one-off scheduled-run job for runKind='seo_audit'. The
+    // scheduler worker picks it up and runs runFullAuditCycle identically
+    // to a real cron tick (logs 'seo_audit_cycle_starting' /
+    // 'seo_audit_cycle_completed'). No customer-facing Slack output — the
+    // cron path is silent, and the customer experiences the audit through
+    // the next daily run's Slack post. The single ack below is operator-
+    // facing only so you know the trigger landed; check Cloud Run logs
+    // and DB for actual progress.
+    if (prompt.toLowerCase().includes('secretchrontest')) {
+      logger.info('adhoc_audit_trigger_received', {
+        tenantId: tenant.tenantId,
+        userId:   event.user ?? 'unknown',
+      })
+      try {
+        await enqueueOneOffRun({ tenantId: tenant.tenantId, runKind: 'seo_audit' })
+        await say({
+          text:      `:eyes: Trigger received. Queued one-off \`seo_audit\` cycle for *${tenant.clientName}* — identical code path to the Saturday-midnight cron. Watch Cloud Run logs for \`seo_audit_cycle_completed\`. No further Slack output from this command.`,
+          thread_ts: event.ts,
+        })
+      } catch (err) {
+        await say({
+          text:      `:x: Failed to queue audit: ${String(err).slice(0, 200)}`,
+          thread_ts: event.ts,
+        })
+        logger.error('adhoc_audit_enqueue_failed', {
+          tenantId: tenant.tenantId,
+          err:      String(err).slice(0, 500),
+        })
+      }
       return
     }
 

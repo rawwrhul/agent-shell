@@ -38,6 +38,31 @@ function queue(): Queue<ScheduledRunPayload> {
   return _queue;
 }
 
+/**
+ * Enqueue a one-off scheduled-run job. Goes through exactly the same
+ * worker code path as a real cron firing — used for ad-hoc testing of
+ * runKinds (typically 'seo_audit') without waiting for the cron tick.
+ * The worker's existing logs ('seo_audit_cycle_starting' /
+ * 'seo_audit_cycle_completed') fire as usual.
+ */
+export async function enqueueOneOffRun(input: {
+  tenantId: string
+  runKind:  RunKind
+}): Promise<void> {
+  await queue().add(
+    'scheduled-run',
+    {
+      tenantId:   input.tenantId,
+      runKind:    input.runKind,
+      triggerAt:  new Date().toISOString(),
+      scheduleId: `oneoff__${input.tenantId}__${input.runKind}__${Date.now()}`,
+    },
+  )
+  logger.info('schedule_oneoff_enqueued', {
+    tenantId: input.tenantId, runKind: input.runKind,
+  })
+}
+
 export async function bootstrapSchedules(): Promise<void> {
   const schedules = await listEnabledSchedules();
 
