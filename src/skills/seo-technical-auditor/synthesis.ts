@@ -169,6 +169,10 @@ GROUPING RULES:
 - For each opportunity, the priority MUST be the maximum severity among its included findings (capped at P0).
 - findingIds MUST be picked from the [id:...] prefix on the findings listed above. Never invent IDs or leave the array empty.
 
+TYPE MAPPING RULES (strict):
+- orphan_page finding → 'add_internal_link_to_orphan'. NEVER 'add_to_sitemap'. Orphans are pages that exist and are reachable but have no internal links pointing to them; the fix is to link to them from an existing page.
+- 'add_to_sitemap' is reserved for indexable pages missing from sitemap.xml. If no finding identifies such a page, do not use this type.
+
 NARRATIVE RULES:
 - Lead with the count of new + persistent findings. Mention severity distribution.
 - Call out any P0 issues by name.
