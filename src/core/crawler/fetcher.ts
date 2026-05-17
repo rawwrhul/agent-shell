@@ -40,6 +40,11 @@ export interface FetchPoliteOptions {
   /** Throttle delay applied AFTER the response returns (so the next call
    *  in the same loop iteration is naturally spaced). Default 500ms. */
   throttleMs: number
+  /** Content-type prefixes whose body should be returned. Defaults to
+   *  HTML variants only. Callers fetching non-HTML resources (robots.txt,
+   *  sitemaps, JSON APIs) can widen this. Match is case-insensitive
+   *  substring against the content-type header. */
+  acceptContentTypes?: string[]
 }
 
 /**
@@ -74,8 +79,9 @@ export async function fetchPolite(
       })
 
       const contentType = res.headers.get('content-type')
-      const isHtml = contentType !== null && HTML_CONTENT_TYPES.some(
-        (t) => contentType.toLowerCase().includes(t),
+      const acceptList = opts.acceptContentTypes ?? HTML_CONTENT_TYPES
+      const isHtml = contentType !== null && acceptList.some(
+        (t) => contentType.toLowerCase().includes(t.toLowerCase()),
       )
 
       // 5xx → retry once if we have budget. 4xx → return as-is, the crawler

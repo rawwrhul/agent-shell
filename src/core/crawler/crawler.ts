@@ -131,6 +131,16 @@ export async function runCrawl(
       if (visited.has(url)) continue
       visited.add(url)
 
+      // ── Directive-file filter ────────────────────────────────────────
+      // sitemap.xml / robots.txt aren't pages — they're directive files.
+      // Skip them from the page inventory entirely so the auditor doesn't
+      // flag them for missing_h1 / missing_meta_description.
+      if (isDirectiveUrl(url)) {
+        pagesSkipped++
+        logger.debug('crawler_skipped_directive', { runId, url })
+        continue
+      }
+
       // ── Host gating ──────────────────────────────────────────────────
       const hostOk = isHostAllowed(url, config.allowedHosts)
       if (!hostOk) {
@@ -419,6 +429,23 @@ function isHostAllowed(url: string, allowedHosts: string[]): boolean {
 function isNoIndex(metaRobots: string | null): boolean {
   if (!metaRobots) return false
   return metaRobots.toLowerCase().split(/[,\s]+/).includes('noindex')
+}
+
+/** Detect URLs that are directive files (sitemap, robots) rather than
+ *  pages. These should never enter the page inventory. */
+function isDirectiveUrl(url: string): boolean {
+  try {
+    const p = new URL(url).pathname.toLowerCase()
+    if (p === '/robots.txt') return true
+    // Matches /sitemap.xml, /sitemap_index.xml, /wp-sitemap.xml,
+    // /post-sitemap.xml, /sitemaps/main.xml, /sitemap.xml.gz, etc.
+    if ((p.endsWith('.xml') || p.endsWith('.xml.gz')) && p.includes('sitemap')) {
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
 }
 
 function minimalInventoryForNonHtml(r: FetchResult): ParsedPage {

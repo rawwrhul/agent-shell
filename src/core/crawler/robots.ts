@@ -69,6 +69,9 @@ export async function isAllowed(
       timeoutMs:  opts.fetchTimeoutMs,
       userAgent,
       throttleMs: 0,  // robots.txt fetches don't count toward crawl politeness budget
+      // robots.txt is typically text/plain, not HTML — widen the accept
+      // list so fetcher returns the body instead of dropping it.
+      acceptContentTypes: ['text/plain', 'text/html', 'application/xhtml+xml'],
     })
 
     if (res.status === 200 && res.body !== null) {
