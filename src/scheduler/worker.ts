@@ -26,7 +26,8 @@ import {
   type ScheduledRunPayload, type RunKind,
 } from './types';
 import { recordScheduleFired } from './index';
-import { getTenant } from '../tenants/registry';
+import { getTenant } from '../tenants/registry'
+import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { enqueueTask } from '../queue/producer';
 import type { TaskTrigger } from '../types';
 
@@ -86,6 +87,23 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   }
   if (!tenant.isActive) {
     logger.info('schedule_skipped_tenant_inactive', { tenantId });
+    return;
+  }
+
+  // seo_audit runs its own cycle (crawl + audit + memory) directly — does
+  // NOT go through the orchestrator/aggregator. The next daily run consumes
+  // the findings + opportunities the audit produced.
+  if (runKind === 'seo_audit') {
+    logger.info('seo_audit_cycle_starting', { tenantId });
+    try {
+      await runFullAuditCycle(tenantId);
+      logger.info('seo_audit_cycle_completed', { tenantId });
+    } catch (err) {
+      logger.error('seo_audit_cycle_failed', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
     return;
   }
 

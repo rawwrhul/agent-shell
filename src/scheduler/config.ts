@@ -12,6 +12,10 @@ export const DEFAULT_SCHEDULES = {
     cronExpr: '0 8 * * 1',          // 8am Monday
     timezone: 'Australia/Sydney',
   },
+  seo_audit: {
+    cronExpr: '0 0 * * 6',          // midnight Saturday (Sydney)
+    timezone: 'Australia/Sydney',
+  },
 } as const
 
 /**
@@ -25,6 +29,12 @@ export async function applyDefaultSchedulesFor(tenantId: string): Promise<void> 
     runKind: 'daily',
     cronExpr: DEFAULT_SCHEDULES.daily.cronExpr,
     timezone: DEFAULT_SCHEDULES.daily.timezone,
+  })
+  await upsertSchedule({
+    tenantId,
+    runKind: 'seo_audit',
+    cronExpr: DEFAULT_SCHEDULES.seo_audit.cronExpr,
+    timezone: DEFAULT_SCHEDULES.seo_audit.timezone,
   })
   // Weekly runs deprecated 2026-05-16. To re-enable, uncomment below
   // AND remove the runKind==='weekly' filter in bootstrapSchedules().

@@ -20,7 +20,9 @@
     "smoke:memory": "tsx scripts/smoke-memory-context.ts",
     "test": "vitest run",
     "crawl": "tsx src/cli/crawl.ts",
-    "smoke:crawler": "tsx scripts/smoke-crawler-parser.ts"
+    "smoke:crawler": "tsx scripts/smoke-crawler-parser.ts",
+    "audit": "tsx src/cli/audit.ts",
+    "smoke:auditor": "tsx scripts/smoke-auditor-checks.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
