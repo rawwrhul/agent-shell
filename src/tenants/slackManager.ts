@@ -78,9 +78,11 @@ export async function startTenantBot(tenant: TenantConfig) {
       // 'secretchrontest mention'. Defaults to 'seo_audit'.
       const cronArgMatch = prompt.toLowerCase().match(/secretchrontest\s+(\w+)/)
       const requested = cronArgMatch?.[1] ?? ''
-      const runKind: 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' =
+      const runKind: 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'daily' | 'weekly' =
         (requested === 'backlink' || requested === 'backlink_prospect') ? 'backlink_prospect' :
         (requested === 'mention'  || requested === 'brand_mention_scan')  ? 'brand_mention_scan' :
+        (requested === 'daily')   ? 'daily' :
+        (requested === 'weekly')  ? 'weekly' :
         'seo_audit'
       logger.info('adhoc_audit_trigger_received', {
         tenantId: tenant.tenantId,
