@@ -166,10 +166,28 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
       "On approve: executor creates the CMS item AND publishes the site in one atomic operation. " +
       "On reject: no-op (nothing was created). " +
       "Set previewUrl to https://tarino.au/resources/<slug> for the post-publish link (the operator clicks it after approving the publish stage).\n\n" +
-      "  • manual_operator_task — for changes Framer's Server API can't do programmatically. " +
-      "Use this for schema markup pastes, internal linking edits, copy changes on existing pages, page-level SEO meta edits, new landing pages. " +
-      "toolInput = { instruction: <full step-by-step instructions including any JSON-LD / HTML / anchor-text strings the operator needs to paste, verbatim>, category?: <'schema' | 'linking' | 'copy' | 'meta' | 'new-page'> }. " +
-      "On approve: executor records acknowledgement. The actual change happens by the operator's hand in Framer's editor.\n\n" +
+      "  • framer_update_blog_meta — update Title and/or Description CMS fields on an EXISTING blog post. " +
+      "toolInput = { slug, newTitle?, newDescription? }. At least one of newTitle/newDescription required. " +
+      "On approve: executor updates the CMS field(s), publishes, deploys to production. Title-only works on Tarino's current schema; description requires one-time UI setup. riskLevel='medium'.\n\n" +
+      "  • framer_update_blog_body — replace the Content field (HTML formattedText) on an existing blog post. " +
+      "toolInput = { slug, newContent }. newContent is the FULL new HTML body. " +
+      "Use this for content refreshes, new sections, embedding internal links via <a href> in the HTML. " +
+      "Refuses to clobber if newContent is <50 chars. riskLevel='high'.\n\n" +
+      "  • framer_add_blog_alt_text — add/update alt text on the Image field of an existing blog post. " +
+      "toolInput = { slug, newAltText }. riskLevel='low'.\n\n" +
+      "  • framer_add_internal_link — wrap the first matching sourceText in an existing blog body with an <a href> pointing to targetUrl. " +
+      "toolInput = { slug, sourceText, targetUrl }. Refuses if a link to targetUrl already exists in the post. " +
+      "For bulk link changes or body rewrites, use framer_update_blog_body instead. riskLevel='medium'.\n\n" +
+      "  • framer_add_site_schema — inject a site-wide JSON-LD schema block via setCustomCode at headEnd. " +
+      "toolInput = { schemaId, jsonLd }. schemaId is a STABLE identifier ('organization', 'website') so re-runs UPDATE rather than duplicate. jsonLd is a JSON string with @context and @type. riskLevel='high'.\n\n" +
+      "  • framer_update_marketing_page_text — surgical text update on a non-CMS marketing page (About/Contact/Resources/homepage). " +
+      "toolInput = { pagePath: <e.g. '/about'>, oldText: <EXACT current text>, newText: <replacement> }. " +
+      "On match failure, executor returns sample texts from the page so you can retry. " +
+      "Use web_fetch first to read the live page and identify the exact target string. riskLevel='high'.\n\n" +
+      "  • manual_operator_task — ONLY for changes the Framer API genuinely can't do: " +
+      "marketing-page meta titles/descriptions, robots.txt, sitemap.xml, per-page canonicals/noindex toggles, new marketing landing pages, internal links on marketing pages. " +
+      "toolInput = { instruction: <precise step-by-step the operator follows in Framer's UI, including exact strings to paste verbatim>, category?: <'schema' | 'linking' | 'copy' | 'meta' | 'new-page' | 'robots-txt' | 'sitemap' | 'canonical' | 'noindex'> }. " +
+      "On approve: executor records acknowledgement; operator does the work in Framer.\n\n" +
       "  • framer_confirm_publish / framer_rollback_draft — LEGACY two-phase commit. Use ONLY if you have a confirmationHash from a prior framer_draft_blog_post call. " +
       "For all NEW work, prefer framer_create_and_publish_blog_post.\n\n" +
       "CRITICAL: toolName MUST be one of the four values listed above. Do NOT use the name of any agent-callable research tool " +

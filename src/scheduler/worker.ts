@@ -175,7 +175,14 @@ What to draft inline this run (in priority order):
 
 1. ONE new blog post on a topic gap. Find a keyword cluster competitors rank for that ${clientName} doesn't have a page for, draft the full post, file via propose_action with toolName='framer_create_and_publish_blog_post'. This is the primary deliverable.
 
-2. 2-3 quick on-page improvements for existing pages. Concrete copy tweaks, meta-description rewrites, schema additions, or internal-link insertions you spot while reviewing the site. File each via propose_action with toolName='manual_operator_task' and a clear instruction including the target page + the exact change.
+2. 2-3 quick on-page improvements for existing pages. Pick the right tool based on what you're changing:
+   - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
+   - Blog body refresh or content additions → framer_update_blog_body, toolInput={ slug, newContent }
+   - Blog image alt text → framer_add_blog_alt_text, toolInput={ slug, newAltText }
+   - Internal link inside a blog post body → framer_add_internal_link, toolInput={ slug, sourceText, targetUrl }
+   - Marketing page body text (About/Contact/etc) → framer_update_marketing_page_text, toolInput={ pagePath, oldText, newText }
+   - Site-wide JSON-LD schema → framer_add_site_schema, toolInput={ schemaId, jsonLd }
+   - Marketing page meta / robots.txt / sitemap / canonicals / per-page noindex → manual_operator_task with precise Framer-UI instructions (these are genuine API limits, not gaps).
 
 3. Refine bank outreach drafts if you spot one that needs work. The backlink_prospector skill drafts a generic pitch for each prospect; if you can write a stronger version for a specific high-value target, do so and file via propose_action with toolName='manual_operator_task' explaining the upgrade.
 

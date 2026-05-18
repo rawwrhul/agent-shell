@@ -809,7 +809,7 @@ C.2  What happens after:
 
 Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName 'framer_create_and_publish_blog_post' (deprecated). The draft creation happens server-side after Stage 1 approve — you only file the pitch.
 
-For non-blog work — schema markup, internal linking inside EXISTING posts, copy edits on live pages, meta tag updates, new landing pages — use propose_action with toolName="manual_operator_task". The instruction field should be detailed enough that the operator can do the work in Framer's editor without further input from you.
+For non-blog work, pick the right tool from the taxonomy above. Quick reference: marketing page body text → framer_update_marketing_page_text; blog meta → framer_update_blog_meta; blog body → framer_update_blog_body; blog alt text → framer_add_blog_alt_text; blog internal links → framer_add_internal_link; site-wide JSON-LD schema → framer_add_site_schema. ONLY use manual_operator_task when no API tool above applies: marketing-page meta titles/descriptions, robots.txt edits, sitemap.xml direct edits, per-page canonicals or noindex toggles, new marketing pages (design brief), or internal links on marketing pages. When you DO use manual_operator_task, the instruction field must be precise enough that the operator can complete the task in Framer's editor without further input from you.
 `
     : `# Task mode: PROPOSE CHANGES (can file approvals)
 
