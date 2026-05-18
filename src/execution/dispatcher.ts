@@ -14,6 +14,7 @@ import {
   execFramerAddSiteSchema,
   execFramerAddBlogAltText,
   execFramerAddInternalLink,
+  execFramerUpdateMarketingPageText,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
@@ -65,6 +66,9 @@ const HANDLERS: Record<
 
   'framer_add_internal_link':  (i, c) =>
     execFramerAddInternalLink(i as unknown as Parameters<typeof execFramerAddInternalLink>[0], c),
+
+  'framer_update_marketing_page_text': (i, c) =>
+    execFramerUpdateMarketingPageText(i as unknown as Parameters<typeof execFramerUpdateMarketingPageText>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),

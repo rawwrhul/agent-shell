@@ -1092,3 +1092,184 @@ export async function execFramerAddInternalLink(
     }
   }
 }
+
+// ── framer_update_marketing_page_text ───────────────────────────────────────
+//
+// Surgical text update on non-CMS marketing pages (About, Contact, Resources,
+// homepage, etc). Uses Canvas Nodes API to find the target page by path,
+// locate the TextNode whose current text exactly matches oldText, set the
+// new text, then publish + deploy.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_update_marketing_page_text'
+//   toolInput:  { pagePath, oldText, newText }
+//   riskLevel:  'high'  (Tier A — substantive marketing-page change)
+//
+// Failure modes:
+//   - PAGE_NOT_FOUND     pagePath doesn't match any page node
+//   - TEXT_NOT_FOUND     oldText doesn't match any TextNode on the page
+//   - AMBIGUOUS_TEXT     oldText matches >1 node — agent must be more specific
+//   - CANVAS_API_UNAVAIL framer-api version doesn't expose getNodesWith*
+//
+// On any failure between setText and deploy: rollback to original text.
+//
+// Note: oldText must EXACTLY match the text in Framer's internal data model.
+// HTML on the live site may differ slightly (entities, whitespace). When the
+// match fails, the executor returns sample texts from the page so the agent
+// can correct its oldText and retry.
+
+export interface UpdateMarketingPageTextInput {
+  pagePath: string
+  oldText:  string
+  newText:  string
+}
+
+export async function execFramerUpdateMarketingPageText(
+  input: UpdateMarketingPageTextInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.pagePath) return { ok: false, summary: 'pagePath is required', error: 'missing pagePath' }
+    if (!input.oldText)  return { ok: false, summary: 'oldText is required',  error: 'missing oldText' }
+    if (!input.newText)  return { ok: false, summary: 'newText is required',  error: 'missing newText' }
+    if (input.oldText === input.newText) {
+      return { ok: false, summary: 'oldText and newText are identical', error: 'NO_CHANGE' }
+    }
+
+    const result = await fr.withFramerSession(ctx.tenant, async (framer: any) => {
+      const cp = await framer.getChangedPaths()
+      const pending = (cp.added?.length ?? 0) + (cp.removed?.length ?? 0) + (cp.modified?.length ?? 0)
+      if (pending > 0) {
+        throw new Error(`Refusing to edit: ${pending} pending change(s) already in Framer workspace.`)
+      }
+
+      // Find the page node by path
+      let pagesWithPath: any[]
+      try {
+        pagesWithPath = await framer.getNodesWithAttribute('path')
+      } catch (err) {
+        throw new Error(`CANVAS_API_UNAVAIL: getNodesWithAttribute failed — framer-api version may not expose canvas APIs: ${String(err).slice(0, 200)}`)
+      }
+      const pageNode = pagesWithPath.find((n: any) => n.path === input.pagePath)
+      if (!pageNode) {
+        const availablePaths = pagesWithPath
+          .map((n: any) => n.path)
+          .filter(Boolean)
+          .slice(0, 15)
+          .join(', ')
+        throw new Error(`PAGE_NOT_FOUND: no page with path "${input.pagePath}". Available: ${availablePaths || '(none discovered)'}`)
+      }
+
+      // Find text nodes within the page subtree
+      let textNodes: any[]
+      try {
+        textNodes = await pageNode.getNodesWithType('TextNode')
+      } catch (err) {
+        throw new Error(`CANVAS_API_UNAVAIL: pageNode.getNodesWithType failed: ${String(err).slice(0, 200)}`)
+      }
+
+      // Find exact match for oldText
+      const matches: any[] = []
+      for (const node of textNodes) {
+        let currentText: string
+        try {
+          currentText = await node.getText()
+        } catch {
+          continue
+        }
+        if (currentText === input.oldText) matches.push(node)
+      }
+
+      if (matches.length === 0) {
+        const sampleTexts: string[] = []
+        for (const n of textNodes.slice(0, 8)) {
+          try {
+            const t = await n.getText()
+            if (t) sampleTexts.push(t.slice(0, 80))
+          } catch { /* skip */ }
+        }
+        throw new Error(`TEXT_NOT_FOUND: oldText not found on ${input.pagePath}. Sample texts on this page: ${sampleTexts.map(s => `"${s}"`).join(' | ')}`)
+      }
+      if (matches.length > 1) {
+        throw new Error(`AMBIGUOUS_TEXT: oldText "${input.oldText.slice(0, 80)}" matches ${matches.length} text nodes on ${input.pagePath}. Make oldText more specific to disambiguate.`)
+      }
+
+      const targetNode = matches[0]
+      const beforeText = input.oldText
+
+      try {
+        await targetNode.setText(input.newText)
+      } catch (err) {
+        throw new Error(`setText failed: ${String(err).slice(0, 200)}`)
+      }
+
+      let prodResult: any
+      try {
+        const preview = await framer.publishForAgent({ action: 'preview' })
+        const hash = preview?.confirmationHash ?? preview?.nextAction?.confirmationHash
+        if (!hash) {
+          throw new Error(`Preview returned no confirmationHash. Shape: ${JSON.stringify(preview ?? null).slice(0, 500)}`)
+        }
+        await framer.publishForAgent({ action: 'confirm_publish', confirmationHash: hash })
+        prodResult = await framer.publishForAgent({ action: 'deploy_to_production' })
+      } catch (err) {
+        logger.warn('marketing_text_rollback_attempt', {
+          tenantId: ctx.tenant.tenantId,
+          pagePath: input.pagePath,
+          err:      String(err).slice(0, 300),
+        })
+        try {
+          await targetNode.setText(beforeText)
+          logger.info('marketing_text_rolled_back', { tenantId: ctx.tenant.tenantId, pagePath: input.pagePath })
+        } catch (rbErr) {
+          logger.error('marketing_text_rollback_failed', {
+            tenantId:    ctx.tenant.tenantId,
+            pagePath:    input.pagePath,
+            originalErr: String(err).slice(0, 300),
+            rollbackErr: String(rbErr).slice(0, 300),
+          })
+        }
+        throw err
+      }
+
+      return { beforeText, newText: input.newText, prodResult }
+    })
+
+    const projectHostname = (() => {
+      try {
+        const h = new URL(ctx.tenant.framer_project_url ?? '').hostname
+        return h.startsWith('www.') ? h.slice(4) : h
+      } catch {
+        return undefined
+      }
+    })()
+    const productionUrl = projectHostname ? `https://${projectHostname}${input.pagePath}` : input.pagePath
+
+    logger.info('exec_framer_update_marketing_page_text', {
+      tenantId:    ctx.tenant.tenantId,
+      taskId:      ctx.taskId,
+      approvalId:  ctx.approvalId,
+      pagePath:    input.pagePath,
+      oldTextLen:  input.oldText.length,
+      newTextLen:  input.newText.length,
+    })
+
+    return {
+      ok:      true,
+      summary: `Updated text on ${productionUrl}: "${input.oldText.slice(0, 50)}" → "${input.newText.slice(0, 50)}"`,
+      detail:  {
+        pagePath:      input.pagePath,
+        oldText:       input.oldText,
+        newText:       input.newText,
+        productionUrl,
+        deploymentId:  result.prodResult.deployment?.id,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_update_marketing_page_text failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
