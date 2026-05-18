@@ -678,3 +678,417 @@ export async function execFramerUpdateBlogBody(
     }
   }
 }
+
+// ── Internal helper: escapeRegex for marker-based custom code blocks ────────
+function escapeRegexForCustomCode(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// ── framer_add_site_schema ──────────────────────────────────────────────────
+//
+// Injects a JSON-LD schema.org block site-wide via Framer's setCustomCode API
+// at headEnd. Schema blocks are wrapped in marker comments so the executor
+// can find and replace its own previous output without disturbing other
+// custom code the operator has set up manually.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_add_site_schema'
+//   toolInput:  { schemaId, jsonLd }
+//   riskLevel:  'high'  (Tier A — site-wide change)
+//
+// schemaId is a stable identifier ('organization', 'website', 'localbusiness')
+// so re-running with the same schemaId UPDATES the existing block rather
+// than adding a duplicate. The operator can review the full JSON-LD in the
+// approval card before approving.
+//
+// Notes:
+//   - jsonLd MUST be valid JSON with @context and @type fields
+//   - Each call REPLACES the headEnd custom code with the union of existing
+//     blocks + this update; rollback restores the previous headEnd verbatim
+//   - For per-page schema, use CMS field interpolation in page template
+//     (Pro plan feature — out of scope here)
+
+export interface AddSiteSchemaInput {
+  schemaId: string
+  jsonLd:   string
+}
+
+export async function execFramerAddSiteSchema(
+  input: AddSiteSchemaInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.schemaId) return { ok: false, summary: 'schemaId is required', error: 'missing schemaId' }
+    if (!input.jsonLd)   return { ok: false, summary: 'jsonLd is required',   error: 'missing jsonLd' }
+
+    let parsed: any
+    try {
+      parsed = JSON.parse(input.jsonLd)
+    } catch (err) {
+      return {
+        ok:      false,
+        summary: 'jsonLd is not valid JSON',
+        error:   'JSONLD_PARSE_FAILED',
+        detail:  { schemaId: input.schemaId, parseError: String(err).slice(0, 200) },
+      }
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { ok: false, summary: 'jsonLd must be a JSON object', error: 'JSONLD_NOT_OBJECT' }
+    }
+    if (!parsed['@context'] || !parsed['@type']) {
+      return {
+        ok:      false,
+        summary: 'jsonLd missing @context or @type — required for schema.org JSON-LD',
+        error:   'JSONLD_MISSING_REQUIRED_FIELDS',
+        detail:  { schemaId: input.schemaId, hasContext: !!parsed['@context'], hasType: !!parsed['@type'] },
+      }
+    }
+
+    const result = await fr.withFramerSession(ctx.tenant, async (framer: any) => {
+      // Workspace must be clean
+      const cp = await framer.getChangedPaths()
+      const pending = (cp.added?.length ?? 0) + (cp.removed?.length ?? 0) + (cp.modified?.length ?? 0)
+      if (pending > 0) {
+        throw new Error(`Refusing to edit: ${pending} pending change(s) already in Framer workspace.`)
+      }
+
+      // Read current custom code (defensive: support shape variants from SDK)
+      let current: any
+      try {
+        current = await framer.getCustomCode()
+      } catch (err) {
+        throw new Error(`getCustomCode failed — the framer-api version may not expose this method: ${String(err).slice(0, 200)}`)
+      }
+      // SDK may return { headEnd: { html } } or { headEnd: 'string' } or null
+      const currentHeadEnd = ((): string => {
+        const he = current?.headEnd
+        if (typeof he === 'string') return he
+        if (he && typeof he === 'object' && typeof he.html === 'string') return he.html
+        return ''
+      })()
+      const beforeHeadEnd = currentHeadEnd
+
+      // Compose new schema block with marker comments
+      const startMarker = `<!-- agent-schema:${input.schemaId} -->`
+      const endMarker   = `<!-- /agent-schema:${input.schemaId} -->`
+      const newBlock    = `${startMarker}\n<script type="application/ld+json">${input.jsonLd}</script>\n${endMarker}`
+
+      const blockPattern = new RegExp(
+        `${escapeRegexForCustomCode(startMarker)}[\\s\\S]*?${escapeRegexForCustomCode(endMarker)}`,
+        'i',
+      )
+      const newHeadEnd = blockPattern.test(currentHeadEnd)
+        ? currentHeadEnd.replace(blockPattern, newBlock)
+        : (currentHeadEnd ? `${currentHeadEnd}\n${newBlock}` : newBlock)
+
+      // Write + publish + deploy, with rollback on failure
+      let prodResult: any
+      try {
+        await framer.setCustomCode({ html: newHeadEnd, location: 'headEnd' })
+        const preview = await framer.publishForAgent({ action: 'preview' })
+        const hash = preview?.confirmationHash ?? preview?.nextAction?.confirmationHash
+        if (!hash) {
+          throw new Error(`Preview returned no confirmationHash. Shape: ${JSON.stringify(preview ?? null).slice(0, 500)}`)
+        }
+        await framer.publishForAgent({ action: 'confirm_publish', confirmationHash: hash })
+        prodResult = await framer.publishForAgent({ action: 'deploy_to_production' })
+      } catch (err) {
+        logger.warn('schema_rollback_attempt', {
+          tenantId: ctx.tenant.tenantId,
+          schemaId: input.schemaId,
+          err:      String(err).slice(0, 300),
+        })
+        try {
+          await framer.setCustomCode({ html: beforeHeadEnd, location: 'headEnd' })
+          logger.info('schema_rolled_back', { tenantId: ctx.tenant.tenantId, schemaId: input.schemaId })
+        } catch (rbErr) {
+          logger.error('schema_rollback_failed', {
+            tenantId:    ctx.tenant.tenantId,
+            schemaId:    input.schemaId,
+            originalErr: String(err).slice(0, 300),
+            rollbackErr: String(rbErr).slice(0, 300),
+          })
+        }
+        throw err
+      }
+
+      return { beforeHeadEnd, newHeadEnd, prodResult }
+    })
+
+    logger.info('exec_framer_add_site_schema', {
+      tenantId:     ctx.tenant.tenantId,
+      taskId:       ctx.taskId,
+      approvalId:   ctx.approvalId,
+      schemaId:     input.schemaId,
+      schemaType:   parsed['@type'],
+      jsonLdLength: input.jsonLd.length,
+    })
+
+    return {
+      ok:      true,
+      summary: `Injected ${parsed['@type']} JSON-LD (${input.schemaId}) site-wide`,
+      detail:  {
+        schemaId:     input.schemaId,
+        schemaType:   parsed['@type'],
+        jsonLdLength: input.jsonLd.length,
+        deploymentId: result.prodResult.deployment?.id,
+        beforeBytes:  result.beforeHeadEnd.length,
+        afterBytes:   result.newHeadEnd.length,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_add_site_schema failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
+
+// ── framer_add_blog_alt_text ────────────────────────────────────────────────
+//
+// Adds alt text to the Image field of an existing blog post. Reads the
+// current image field value to detect its shape (string URL vs object
+// with url/altText), then writes back with altText set.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_add_blog_alt_text'
+//   toolInput:  { slug, newAltText }
+//   riskLevel:  'low'  (alt text is pure accessibility/SEO win)
+//
+// If the Blog schema has no Image field, returns BLOG_SCHEMA_NO_IMAGE_FIELD.
+// If the post has no image set yet, returns NO_IMAGE_TO_ANNOTATE.
+// Image-field shape is detected at runtime — logs the shape for future
+// reference so we can simplify once we've seen real data.
+
+export interface AddBlogAltTextInput {
+  slug:       string
+  newAltText: string
+}
+
+export async function execFramerAddBlogAltText(
+  input: AddBlogAltTextInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.slug)       return { ok: false, summary: 'slug is required',       error: 'missing slug' }
+    if (!input.newAltText) return { ok: false, summary: 'newAltText is required', error: 'missing newAltText' }
+
+    const { fieldIds, currentImageValue } = await fr.withFramerSession(ctx.tenant, async (framer: any) => {
+      const blog = await findBlogCollection(framer)
+      const fids = await resolveBlogFieldIdsExtended(blog)
+      if (!fids.imageId) return { fieldIds: fids, currentImageValue: undefined }
+      const items = await blog.getItems()
+      const item = items.find((i: { slug: string }) => i.slug === input.slug)
+      if (!item) throw new Error(`Blog item with slug "${input.slug}" not found`)
+      return { fieldIds: fids, currentImageValue: item.fieldData?.[fids.imageId]?.value }
+    })
+
+    if (!fieldIds.imageId) {
+      return {
+        ok:      false,
+        summary: 'Blog schema has no Image field — alt text cannot be set',
+        error:   'BLOG_SCHEMA_NO_IMAGE_FIELD',
+      }
+    }
+    if (currentImageValue === undefined || currentImageValue === null) {
+      return {
+        ok:      false,
+        summary: 'Blog post has no image set — add an image first, then add alt text',
+        error:   'NO_IMAGE_TO_ANNOTATE',
+        detail:  { slug: input.slug },
+      }
+    }
+
+    // Detect shape and construct updated value preserving original fields
+    let updatedValue: unknown
+    let detectedShape: string
+    if (typeof currentImageValue === 'string') {
+      detectedShape = 'url-string'
+      updatedValue = { url: currentImageValue, altText: input.newAltText }
+    } else if (typeof currentImageValue === 'object' && currentImageValue !== null) {
+      detectedShape = 'object'
+      updatedValue = { ...(currentImageValue as Record<string, unknown>), altText: input.newAltText }
+    } else {
+      return {
+        ok:      false,
+        summary: `Unexpected image field shape: ${typeof currentImageValue}`,
+        error:   'IMAGE_FIELD_SHAPE_UNKNOWN',
+        detail:  { currentValueType: typeof currentImageValue, sample: String(currentImageValue).slice(0, 200) },
+      }
+    }
+
+    logger.info('alt_text_shape_detected', {
+      tenantId:           ctx.tenant.tenantId,
+      slug:               input.slug,
+      shape:              detectedShape,
+      currentValueSample: JSON.stringify(currentImageValue).slice(0, 200),
+    })
+
+    const fieldUpdates = {
+      [fieldIds.imageId]: { type: 'image', value: updatedValue },
+    }
+
+    const editResult = await applyBlogItemEdit(ctx.tenant, {
+      slug:            input.slug,
+      fieldUpdates,
+      changedFieldIds: [fieldIds.imageId],
+    })
+
+    logger.info('exec_framer_add_blog_alt_text', {
+      tenantId:      ctx.tenant.tenantId,
+      taskId:        ctx.taskId,
+      approvalId:    ctx.approvalId,
+      slug:          input.slug,
+      itemId:        editResult.itemId,
+      altTextLength: input.newAltText.length,
+      detectedShape,
+    })
+
+    return {
+      ok:      true,
+      summary: `Added alt text to image on ${editResult.productionUrl}`,
+      detail:  {
+        slug:          input.slug,
+        itemId:        editResult.itemId,
+        productionUrl: editResult.productionUrl,
+        deploymentId:  editResult.deploymentId,
+        altText:       input.newAltText,
+        detectedShape,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_add_blog_alt_text failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
+
+// ── framer_add_internal_link ────────────────────────────────────────────────
+//
+// Surgical internal-link insertion in an existing blog post body. Wraps the
+// first occurrence of sourceText (outside existing <a> tags) in an anchor
+// pointing to targetUrl. Refuses if a link to targetUrl already exists in
+// the body.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_add_internal_link'
+//   toolInput:  { slug, sourceText, targetUrl }
+//   riskLevel:  'medium'
+//
+// For BULK or sweeping body rewrites, use framer_update_blog_body instead —
+// this tool is for one-link-at-a-time additions.
+
+export interface AddInternalLinkInput {
+  slug:       string
+  sourceText: string
+  targetUrl:  string
+}
+
+function escapeRegexLink(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function insertInternalLink(html: string, sourceText: string, targetUrl: string): string | null {
+  // Split on <a>...</a> blocks. We only insert into NON-anchor parts so we
+  // never nest anchors or replace text inside existing links.
+  const parts = html.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
+  for (let i = 0; i < parts.length; i++) {
+    if (/^<a\b/i.test(parts[i])) continue
+    const idx = parts[i].indexOf(sourceText)
+    if (idx !== -1) {
+      const safeUrl = targetUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      parts[i] = parts[i].slice(0, idx) +
+                 `<a href="${safeUrl}">${sourceText}</a>` +
+                 parts[i].slice(idx + sourceText.length)
+      return parts.join('')
+    }
+  }
+  return null
+}
+
+export async function execFramerAddInternalLink(
+  input: AddInternalLinkInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.slug)       return { ok: false, summary: 'slug is required',       error: 'missing slug' }
+    if (!input.sourceText) return { ok: false, summary: 'sourceText is required', error: 'missing sourceText' }
+    if (!input.targetUrl)  return { ok: false, summary: 'targetUrl is required',  error: 'missing targetUrl' }
+
+    const { fieldIds, currentContent } = await fr.withFramerSession(ctx.tenant, async (framer: any) => {
+      const blog = await findBlogCollection(framer)
+      const fids = await resolveBlogFieldIdsExtended(blog)
+      const items = await blog.getItems()
+      const item = items.find((i: { slug: string }) => i.slug === input.slug)
+      if (!item) throw new Error(`Blog item with slug "${input.slug}" not found`)
+      return {
+        fieldIds:       fids,
+        currentContent: (item.fieldData?.[fids.contentId]?.value ?? '') as string,
+      }
+    })
+
+    // Refuse if already linked to that URL
+    const escapedUrl = escapeRegexLink(input.targetUrl)
+    const existingPattern = new RegExp(`<a[^>]*href=["']${escapedUrl}["']`, 'i')
+    if (existingPattern.test(currentContent)) {
+      return {
+        ok:      false,
+        summary: `A link to ${input.targetUrl} already exists in this post`,
+        error:   'LINK_ALREADY_EXISTS',
+        detail:  { slug: input.slug, targetUrl: input.targetUrl },
+      }
+    }
+
+    const newContent = insertInternalLink(currentContent, input.sourceText, input.targetUrl)
+    if (!newContent) {
+      return {
+        ok:      false,
+        summary: `Source text "${input.sourceText.slice(0, 60)}" not found in body (outside existing links)`,
+        error:   'SOURCE_TEXT_NOT_FOUND',
+        detail:  { slug: input.slug, sourceText: input.sourceText },
+      }
+    }
+
+    const fieldUpdates = {
+      [fieldIds.contentId]: { type: 'formattedText', value: newContent },
+    }
+
+    const editResult = await applyBlogItemEdit(ctx.tenant, {
+      slug:            input.slug,
+      fieldUpdates,
+      changedFieldIds: [fieldIds.contentId],
+    })
+
+    logger.info('exec_framer_add_internal_link', {
+      tenantId:   ctx.tenant.tenantId,
+      taskId:     ctx.taskId,
+      approvalId: ctx.approvalId,
+      slug:       input.slug,
+      itemId:     editResult.itemId,
+      sourceText: input.sourceText.slice(0, 100),
+      targetUrl:  input.targetUrl,
+    })
+
+    return {
+      ok:      true,
+      summary: `Linked "${input.sourceText.slice(0, 60)}" → ${input.targetUrl} on ${editResult.productionUrl}`,
+      detail:  {
+        slug:          input.slug,
+        itemId:        editResult.itemId,
+        productionUrl: editResult.productionUrl,
+        deploymentId:  editResult.deploymentId,
+        sourceText:    input.sourceText,
+        targetUrl:     input.targetUrl,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_add_internal_link failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
+    }
+  }
+}

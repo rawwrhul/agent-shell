@@ -11,6 +11,9 @@ import {
   execApproveBlogPitch,
   execFramerUpdateBlogMeta,
   execFramerUpdateBlogBody,
+  execFramerAddSiteSchema,
+  execFramerAddBlogAltText,
+  execFramerAddInternalLink,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
@@ -53,6 +56,15 @@ const HANDLERS: Record<
 
   'framer_update_blog_body':   (i, c) =>
     execFramerUpdateBlogBody(i as unknown as Parameters<typeof execFramerUpdateBlogBody>[0], c),
+
+  'framer_add_site_schema':    (i, c) =>
+    execFramerAddSiteSchema(i as unknown as Parameters<typeof execFramerAddSiteSchema>[0], c),
+
+  'framer_add_blog_alt_text':  (i, c) =>
+    execFramerAddBlogAltText(i as unknown as Parameters<typeof execFramerAddBlogAltText>[0], c),
+
+  'framer_add_internal_link':  (i, c) =>
+    execFramerAddInternalLink(i as unknown as Parameters<typeof execFramerAddInternalLink>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),
