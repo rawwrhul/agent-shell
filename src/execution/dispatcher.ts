@@ -9,6 +9,7 @@ import {
   execFramerCreateAndPublishBlogPost,
   execManualOperatorTask,
   execApproveBlogPitch,
+  execFramerUpdateBlogMeta,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
@@ -44,6 +45,10 @@ const HANDLERS: Record<
   // On approve, executor creates Framer draft + queues Stage 2 (framer_confirm_publish).
   'approve_blog_pitch':        (i, c) =>
     execApproveBlogPitch(i as unknown as Parameters<typeof execApproveBlogPitch>[0], c),
+
+  // P0 single-approval write executors
+  'framer_update_blog_meta':   (i, c) =>
+    execFramerUpdateBlogMeta(i as unknown as Parameters<typeof execFramerUpdateBlogMeta>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),

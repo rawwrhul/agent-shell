@@ -22,6 +22,11 @@ import * as fr from './client'
 import { logger } from '../../logger'
 import { onPublishSucceeded, onPublishFailed } from '../../memory/pipeline-events'
 import type { IntegrationContext, ExecutionResult } from '../types'
+import {
+  applyBlogItemEdit,
+  findBlogCollection,
+  resolveBlogFieldIdsExtended,
+} from './cms-write'
 
 // ── framer_confirm_publish ─────────────────────────────────────────────────
 
@@ -434,6 +439,127 @@ export async function execApproveBlogPitch(
       ok:      false,
       summary: `approve_blog_pitch failed: ${String(err).slice(0, 160)}`,
       error:   String(err).slice(0, 400),
+    }
+  }
+}
+
+// ── framer_update_blog_meta ─────────────────────────────────────────────────
+//
+// Single-stage approval write executor. Updates the Title and/or Description
+// CMS fields on an existing blog item, then publishes + deploys to production.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_update_blog_meta'
+//   toolInput:  { slug, newTitle?, newDescription? }
+//   riskLevel:  'medium'
+//
+// On approval, executor:
+//   1. Resolves field IDs; errors if Description requested but missing schema
+//   2. Updates the requested fields via addItems (id=existing → update)
+//   3. preview → confirm_publish → deploy_to_production (atomic)
+//   4. Rollback to original values on any post-update failure
+//
+// Tarino's Blog schema currently has Title/Date/Content/Image only. Until the
+// operator adds a Description field to the Blog collection AND updates the
+// blog page template to interpolate {{Description}} in Page Settings, this
+// executor returns BLOG_SCHEMA_NO_DESCRIPTION_FIELD when newDescription is
+// passed. Title-only updates work today.
+
+export interface UpdateBlogMetaInput {
+  slug:            string
+  newTitle?:       string
+  newDescription?: string
+}
+
+export async function execFramerUpdateBlogMeta(
+  input: UpdateBlogMetaInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.slug) {
+      return { ok: false, summary: 'slug is required', error: 'missing slug' }
+    }
+    if (!input.newTitle && !input.newDescription) {
+      return {
+        ok:      false,
+        summary: 'At least one of newTitle or newDescription is required',
+        error:   'no fields to update',
+      }
+    }
+
+    // Resolve field IDs (cheap session — schema only) before applying edit
+    const fieldIds = await fr.withFramerSession(ctx.tenant, async (framer) => {
+      const blog = await findBlogCollection(framer)
+      return resolveBlogFieldIdsExtended(blog)
+    })
+
+    if (input.newDescription && !fieldIds.descriptionId) {
+      return {
+        ok:      false,
+        summary: 'Cannot update meta description: no Description field exists in the Blog schema yet',
+        error:   'BLOG_SCHEMA_NO_DESCRIPTION_FIELD',
+        detail:  {
+          slug:        input.slug,
+          setupNeeded: [
+            'Open the Blog collection in Framer designer',
+            'Click Settings → add a Plain Text field named "Description"',
+            'Open the blog page template → Page Settings → Description field',
+            'Set it to {{Description}} so it interpolates the CMS value',
+            'Publish the template change',
+            'Then retry: framer_update_blog_meta will work for descriptions',
+          ],
+        },
+      }
+    }
+
+    const fieldUpdates: Record<string, { type: string; value: unknown }> = {}
+    const changedFieldIds: string[] = []
+    if (input.newTitle) {
+      fieldUpdates[fieldIds.titleId] = { type: 'string', value: input.newTitle }
+      changedFieldIds.push(fieldIds.titleId)
+    }
+    if (input.newDescription && fieldIds.descriptionId) {
+      fieldUpdates[fieldIds.descriptionId] = { type: 'string', value: input.newDescription }
+      changedFieldIds.push(fieldIds.descriptionId)
+    }
+
+    const editResult = await applyBlogItemEdit(ctx.tenant, {
+      slug:            input.slug,
+      fieldUpdates,
+      changedFieldIds,
+    })
+
+    const updatedFields: string[] = []
+    if (input.newTitle)       updatedFields.push('title')
+    if (input.newDescription) updatedFields.push('description')
+
+    logger.info('exec_framer_update_blog_meta', {
+      tenantId:     ctx.tenant.tenantId,
+      taskId:       ctx.taskId,
+      approvalId:   ctx.approvalId,
+      slug:         input.slug,
+      itemId:       editResult.itemId,
+      updatedFields,
+    })
+
+    return {
+      ok:      true,
+      summary: `Updated ${updatedFields.join(' + ')} on ${editResult.productionUrl}`,
+      detail:  {
+        slug:          input.slug,
+        itemId:        editResult.itemId,
+        productionUrl: editResult.productionUrl,
+        deploymentId:  editResult.deploymentId,
+        before:        editResult.before,
+        after:         editResult.after,
+        updatedFields,
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_update_blog_meta failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
     }
   }
 }
