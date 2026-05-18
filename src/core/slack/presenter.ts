@@ -273,6 +273,35 @@ export class SlackPresenter {
     });
   }
 
+  /**
+   * Remove a resolved approval from the anchor's awaitingApproval[] array
+   * and re-render the anchor. Called by the HITL approve/reject handler
+   * when the click happened on an in-anchor approval button (rather than
+   * a threaded individual approval card).
+   *
+   * Without this, clicking approve on an anchor-embedded card would
+   * overwrite the entire anchor message with the small approval-resolved
+   * card content — the R3 inline-batched-approvals UI breaks on every click.
+   */
+  async removeApprovalFromAnchor(taskId: string, approvalId: string): Promise<void> {
+    await this.mutate(taskId, state => {
+      if (!state.finalReport) return state;
+      const fr = state.finalReport;
+      // Only daily/weekly/adhoc reports have awaitingApproval[].
+      if (!('awaitingApproval' in fr) || !Array.isArray((fr as any).awaitingApproval)) return state;
+      const filtered = (fr as any).awaitingApproval.filter((a: { id: string }) => a.id !== approvalId);
+      // No change? skip the re-render.
+      if (filtered.length === (fr as any).awaitingApproval.length) return state;
+      return {
+        ...state,
+        finalReport: {
+          ...(fr as any),
+          awaitingApproval: filtered,
+        },
+      };
+    });
+  }
+
   // ──────────────────────────────────────────────────────────────────────
   // Approval messages — non-threaded
   // ──────────────────────────────────────────────────────────────────────

@@ -405,9 +405,27 @@ export async function createAndPublishBlogPost(
     content:  input.content,
     imageUrl: input.imageUrl,
   })
+  // Defensive: prefer top-level confirmationHash, fall back to
+  // nextAction.confirmationHash. Framer SDK has shifted this between
+  // versions — accepting either keeps us forward + backward compatible.
+  const previewHash = draft.preview?.confirmationHash
+                   ?? draft.preview?.nextAction?.confirmationHash
+                   ?? null
+  if (!previewHash) {
+    logger.error('framer_preview_missing_hash', {
+      tenantId: tenant.tenantId,
+      itemId:   draft.itemId,
+      // Truncate but keep enough to diagnose the actual shape
+      preview:  JSON.stringify(draft.preview ?? null).slice(0, 1500),
+    })
+    // Roll back the just-created item rather than leaving orphan content
+    try { await removeBlogPost(tenant, draft.itemId) } catch { /* swallow */ }
+    throw new Error('Framer preview returned no confirmationHash — see framer_preview_missing_hash log for full preview response')
+  }
+
   let publish: ConfirmPublishResult
   try {
-    publish = await confirmPublish(tenant, draft.preview.confirmationHash)
+    publish = await confirmPublish(tenant, previewHash)
   } catch (err) {
     // Best-effort rollback so an interrupted publish doesn't leave cruft behind.
     try { await removeBlogPost(tenant, draft.itemId) } catch { /* swallow */ }

@@ -23,6 +23,8 @@ import {
   type ApprovalRow,
 } from './state-store';
 import { updateApprovalRowStatus } from './sheets';
+import { presenter } from '../core/slack';
+import { getRun } from '../core/slack/state-store';
 import { getTenant } from '../tenants/registry';
 import { onApprovalApproved } from './execution-hook';
 
@@ -279,6 +281,48 @@ async function editMessageToResolved(
     },
   ];
 
+  // anchor_aware_resolved_message:
+  // Determine whether the click happened on the anchor message (inline
+  // R3-batched approval card) or on a threaded individual approval card.
+  // - Anchor click: post a thread reply with the resolved status and
+  //   remove the resolved card from the anchor's awaitingApproval list.
+  //   DO NOT chat.update the anchor — that would destroy the daily-run
+  //   rendering.
+  // - Threaded click: keep the original behaviour (edit the threaded
+  //   card in place to show approved/rejected status).
+  let isAnchorClick = false;
+  try {
+    const run = await getRun(pool(), resolved.taskId);
+    if (run?.anchorTs && run.anchorTs === ctx.slackMessageTs) {
+      isAnchorClick = true;
+    }
+  } catch (err) {
+    logger.warn('anchor_detection_failed', {
+      approvalId: ctx.approvalId, err: String(err).slice(0, 200),
+    });
+  }
+
+  if (isAnchorClick) {
+    await ctx.client.chat.postMessage({
+      channel:   ctx.slackChannelId,
+      thread_ts: ctx.slackMessageTs,
+      text:      `${verb} — ${summary}`,
+      blocks,
+    }).catch((err) => {
+      logger.error('approval_thread_reply_failed', {
+        approvalId: ctx.approvalId, err: String(err),
+      });
+    });
+    // Remove the resolved card from the anchor + re-render.
+    await presenter.removeApprovalFromAnchor(resolved.taskId, ctx.approvalId).catch((err) => {
+      logger.warn('anchor_reapproval_remove_failed', {
+        approvalId: ctx.approvalId, err: String(err).slice(0, 200),
+      });
+    });
+    return;
+  }
+
+  // Threaded card: edit in place (original behaviour).
   await ctx.client.chat.update({
     channel: ctx.slackChannelId,
     ts:      ctx.slackMessageTs,

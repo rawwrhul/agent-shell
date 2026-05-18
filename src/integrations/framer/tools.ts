@@ -21,6 +21,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { TenantConfig } from '../../tenants/types'
 import * as fr from './client'
+import { logger } from '../../logger'
 
 export const FRAMER_TOOLS: Anthropic.Tool[] = [
   {
@@ -143,7 +144,18 @@ export async function executeFramerTool(
         })
         return JSON.stringify({
           itemId:           result.itemId,
-          confirmationHash: result.preview.confirmationHash,
+          confirmationHash: (() => {
+            const h = result.preview?.confirmationHash ?? result.preview?.nextAction?.confirmationHash
+            if (!h) {
+              logger.error('framer_pitch_missing_hash', {
+                tenantId: tenant.tenantId,
+                itemId:   result.itemId,
+                preview:  JSON.stringify(result.preview ?? null).slice(0, 1500),
+              })
+              throw new Error('Framer preview returned no confirmationHash on pitch draft')
+            }
+            return h
+          })(),
           changes:          result.preview.changes,
           changesCount:     result.preview.changesCount,
           warnings:         result.preview.warnings,
