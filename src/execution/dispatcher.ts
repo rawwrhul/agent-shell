@@ -10,6 +10,7 @@ import {
   execManualOperatorTask,
   execApproveBlogPitch,
   execFramerUpdateBlogMeta,
+  execFramerUpdateBlogBody,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 
@@ -49,6 +50,9 @@ const HANDLERS: Record<
   // P0 single-approval write executors
   'framer_update_blog_meta':   (i, c) =>
     execFramerUpdateBlogMeta(i as unknown as Parameters<typeof execFramerUpdateBlogMeta>[0], c),
+
+  'framer_update_blog_body':   (i, c) =>
+    execFramerUpdateBlogBody(i as unknown as Parameters<typeof execFramerUpdateBlogBody>[0], c),
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),

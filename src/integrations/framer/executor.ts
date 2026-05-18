@@ -563,3 +563,118 @@ export async function execFramerUpdateBlogMeta(
     }
   }
 }
+
+// ── framer_update_blog_body ─────────────────────────────────────────────────
+//
+// Replaces the Content field (HTML formattedText) on an existing blog post,
+// then publishes + deploys to production. Body changes are substantive — per
+// operator's tier rules these are Tier A (double approval) but we render the
+// FULL new HTML in the approval card so single-stage is acceptable when the
+// operator reviews the content carefully before approving.
+//
+// Agent files propose_action with:
+//   toolName:   'framer_update_blog_body'
+//   toolInput:  { slug, newContent }
+//   riskLevel:  'high'
+//
+// Use cases:
+//   - Refreshing thin/stale content on existing posts
+//   - Adding new sections or paragraphs to existing posts
+//   - Inserting internal links (just embed <a href="..."> in the HTML)
+//   - Replacing weak content with depth (research, examples, data)
+//
+// NOT for:
+//   - Creating new posts (use approve_blog_pitch — two-stage with draft preview)
+//   - Meta-only changes (use framer_update_blog_meta — much cheaper)
+
+export interface UpdateBlogBodyInput {
+  slug:       string
+  newContent: string   // HTML in Framer formattedText format
+}
+
+export async function execFramerUpdateBlogBody(
+  input: UpdateBlogBodyInput,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  try {
+    if (!input.slug) {
+      return { ok: false, summary: 'slug is required', error: 'missing slug' }
+    }
+    if (!input.newContent) {
+      return { ok: false, summary: 'newContent is required', error: 'missing newContent' }
+    }
+    // Guard against accidentally clobbering with near-empty content
+    if (input.newContent.length < 50) {
+      return {
+        ok:      false,
+        summary: `Refusing to clobber existing body with ${input.newContent.length} chars of content — likely a malformed update`,
+        error:   'CONTENT_TOO_SHORT',
+        detail:  { slug: input.slug, providedLength: input.newContent.length },
+      }
+    }
+
+    const fieldIds = await fr.withFramerSession(ctx.tenant, async (framer) => {
+      const blog = await findBlogCollection(framer)
+      return resolveBlogFieldIdsExtended(blog)
+    })
+
+    const fieldUpdates = {
+      [fieldIds.contentId]: { type: 'formattedText', value: input.newContent },
+    }
+    const changedFieldIds = [fieldIds.contentId]
+
+    const editResult = await applyBlogItemEdit(ctx.tenant, {
+      slug:            input.slug,
+      fieldUpdates,
+      changedFieldIds,
+    })
+
+    // Compute char delta for telemetry
+    const beforeContentLength = (() => {
+      const before = editResult.before.find((s: any) => s.fieldId === fieldIds.contentId)
+      return typeof before?.value === 'string' ? before.value.length : 0
+    })()
+    const afterContentLength = input.newContent.length
+    const delta = afterContentLength - beforeContentLength
+
+    // Count internal links inserted (for visibility into agent behaviour)
+    const linkCount = (input.newContent.match(/<a\s+href=/gi) ?? []).length
+
+    logger.info('exec_framer_update_blog_body', {
+      tenantId:            ctx.tenant.tenantId,
+      taskId:              ctx.taskId,
+      approvalId:          ctx.approvalId,
+      slug:                input.slug,
+      itemId:              editResult.itemId,
+      beforeContentLength,
+      afterContentLength,
+      delta,
+      linkCount,
+    })
+
+    const sign = delta >= 0 ? '+' : ''
+    return {
+      ok:      true,
+      summary: `Updated body content on ${editResult.productionUrl} (${sign}${delta} chars, ${linkCount} link${linkCount === 1 ? '' : 's'})`,
+      detail:  {
+        slug:                input.slug,
+        itemId:              editResult.itemId,
+        productionUrl:       editResult.productionUrl,
+        deploymentId:        editResult.deploymentId,
+        beforeContentLength,
+        afterContentLength,
+        delta,
+        linkCount,
+        // Keep full before/after snapshots in editResult — accessible via
+        // execution_jobs.result for ad-hoc rollback. Not duplicated here to
+        // avoid bloating the dispatcher result column.
+      },
+    }
+  } catch (err) {
+    return {
+      ok:      false,
+      summary: `framer_update_blog_body failed: ${String(err).slice(0, 160)}`,
+      error:   String(err).slice(0, 500),
+    }
+  }
+}
