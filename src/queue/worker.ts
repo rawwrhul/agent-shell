@@ -138,7 +138,27 @@ async function withJobWatchdog<T>(
 }
 
 worker.on('completed', job => logger.info('job_done', { jobId: job.id, type: job.data.jobType }))
-worker.on('failed', (job, err) => logger.error('job_err', { jobId: job?.id, type: job?.data?.jobType, err: err.message }))
+worker.on('failed', async (job, err) => {
+  logger.error('job_err', { jobId: job?.id, type: job?.data?.jobType, err: err.message })
+
+  // subagent_final_failure_slack_update:
+  // When a subagent job is permanently failed (retries exhausted), close
+  // the loop on Slack — otherwise the anchor stays stuck in "Planning" or
+  // "Executing" forever. Only fire on FINAL attempt — earlier retries may
+  // still succeed.
+  try {
+    if (!job) return
+    const isFinalAttempt = job.attemptsMade >= (job.opts?.attempts ?? 1)
+    if (!isFinalAttempt) return
+    if (job.data?.jobType !== 'subagent') return
+    const taskId = job.data.task?.id
+    if (!taskId) return
+    await presenter.failRun(taskId, `Subagent failed (${job.attemptsMade} attempts): ${String(err?.message ?? err).slice(0, 300)}`)
+    logger.info('subagent_final_failure_slack_updated', { taskId, attempts: job.attemptsMade })
+  } catch (e) {
+    logger.error('subagent_final_failure_slack_error', { err: String(e).slice(0, 300) })
+  }
+})
 worker.on('error', err => logger.error('worker_error', { err: err.message }))
 
 logger.info('worker_started', { queue: 'agent-jobs', concurrency: 8 })

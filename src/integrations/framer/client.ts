@@ -58,7 +58,16 @@ export async function openFramerSession(tenant: TenantConfig): Promise<FramerSes
   }
 
   const connect = await getConnect()
-  const client = await connect(projectUrl, cred.secret)
+  const client = await Promise.race([
+    connect(projectUrl, cred.secret),
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error('framer_connect_timeout after 20s')),
+      20_000
+    )),
+  ]).catch(err => {
+    logger.error('framer_connect_timeout', { tenantId: tenant.tenantId, projectUrl, err: String(err).slice(0, 200) })
+    throw err
+  })
   logger.info('framer_session_open', { tenantId: tenant.tenantId, projectUrl })
 
   return {

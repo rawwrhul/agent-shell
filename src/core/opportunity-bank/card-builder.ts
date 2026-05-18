@@ -196,10 +196,23 @@ interface OutreachSpecInput {
   leadIn:        string
 }
 
-function buildOutreachSpec(input: OutreachSpecInput): CardSpec {
+function buildOutreachSpec(input: OutreachSpecInput): CardSpec | null {
   const d = input.detail
   const sourceUrl  = str(d.source_url) ?? '(unknown)'
   const sourceDom  = str(d.source_domain) ?? str(d.source_url) ?? '(unknown)'
+
+  // Guard: don't file approval cards with no real target — they're
+  // unactionable noise for the operator. If DataForSEO/research failed
+  // upstream, fail the surfacing here rather than ship a broken card.
+  if (sourceDom === '(unknown)' || !sourceDom || sourceUrl === '(unknown)' || !sourceUrl) {
+    logger.warn('outreach_guard_skip', {
+      opportunityId: input.opp.id,
+      prospectKind:  input.prospectKind,
+      reason:        'target_site or source_url is (unknown) — refusing to file noise card',
+    })
+    return null
+  }
+
   const subject    = str(d.drafted_subject) ?? `Quick question about ${sourceDom}`
   const body       = str(d.drafted_body) ?? '(no draft generated — DataForSEO may have failed)'
   const mailtoUrl  = str(d.mailto_url) ?? null

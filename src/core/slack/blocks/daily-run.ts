@@ -162,7 +162,11 @@ function queuedSummaryLine(items: QueuedAction[]): string {
 
 function awaitingSummaryLine(items: ApprovalItem[]): string {
   const oldest = items.reduce(
-    (max, i) => (i.pendingSince < max ? i.pendingSince : max),
+    (min: Date, i) => {
+      // Coerce — pendingSince may arrive as a JSON string, not a Date
+      const d = i.pendingSince instanceof Date ? i.pendingSince : new Date(i.pendingSince as any)
+      return Number.isNaN(d.getTime()) ? min : (d < min ? d : min)
+    },
     new Date()
   );
   return `${items.length} blocked · oldest pending ${formatRelative(oldest)}`;

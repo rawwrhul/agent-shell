@@ -161,7 +161,8 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
 
     // Single Claude call to synthesise — system prompt picked by trigger.
     const systemPrompt = getAggregatorSystemPromptFor(trigger, tenant)
-    const userPrompt = buildAggregatorUserPrompt(task, outputs, trigger, differentialBlock)
+    const pendingApprovalsBlock = await loadPendingApprovalsForPrompt(task.id)
+    const userPrompt = buildAggregatorUserPrompt(task, outputs, trigger, differentialBlock, pendingApprovalsBlock)
 
     const response = await anthropic.messages.create({
       model:      tenant.agentModel,
@@ -748,11 +749,59 @@ If the Prior-week comparison block says "This week had NO material activity":
 
 // ── User prompt builder ───────────────────────────────────────────────────
 
+/**
+ * Load pending approval_requests for this task and format as a structured
+ * block for the aggregator's synthesis LLM. This is the AUTHORITATIVE
+ * source for awaitingApproval titles + details — without it, the LLM
+ * extrapolates from specialist narrative and produces generic placeholders
+ * like "On-page improvement #1 — quick copy or meta tweak".
+ */
+async function loadPendingApprovalsForPrompt(taskId: string): Promise<string> {
+  const { rows } = await bankPool.query<{
+    id: string
+    tool_name: string
+    tool_input: any
+    risk_reason: string | null
+    requested_at: Date
+  }>(
+    `SELECT id, tool_name, tool_input, risk_reason, requested_at
+       FROM approval_requests
+      WHERE task_id = $1 AND status = 'pending'
+      ORDER BY requested_at ASC`,
+    [taskId]
+  )
+  if (rows.length === 0) return ''
+
+  const formatted = rows.map(r => {
+    const inputStr = JSON.stringify(r.tool_input ?? {}).slice(0, 1200)
+    const reason   = String(r.risk_reason ?? '').slice(0, 400)
+    return `- id: ${r.id}
+  tool_name: ${r.tool_name}
+  requested_at: ${r.requested_at.toISOString()}
+  tool_input: ${inputStr}
+  risk_reason: ${reason}`
+  }).join('\n\n')
+
+  return `# Pending approvals for this run (AUTHORITATIVE — use as ground truth for awaitingApproval)
+
+These are the EXACT rows in approval_requests with status='pending' for this task. Use them DIRECTLY to populate the awaitingApproval array in your output. Rules:
+
+- Copy the \`id\` value verbatim into the output's id field.
+- Use \`requested_at\` (ISO datetime) as pendingSince.
+- For \`title\`: pull the first sentence (up to ~180 chars) from \`tool_input.instruction\` (for manual_operator_task) or \`tool_input.post_title\` (for blog post tools), or build a specific title from the most informative field. NEVER use placeholder phrases like "On-page improvement #N", "quick copy or meta tweak", "exact instruction is in the approval card", "specific fix", or any generic template.
+- For \`detail\`: use the remainder of tool_input.instruction, or risk_reason. Up to ~350 chars. Must be specific and actionable.
+- Severity: critical for security/breakage, high for publishing/outreach, medium for fixes, low for housekeeping.
+
+${formatted}
+`
+}
+
 function buildAggregatorUserPrompt(
   task: AgentTask,
   outputs: Array<{ specialistType: string; specialistName: string; summary: string; fullOutput: string }>,
   trigger: TaskTrigger,
   differentialBlock = '',
+  pendingApprovalsBlock = '',
 ): string {
   const sections = outputs.map(o =>
     `## ${o.specialistName} (${o.specialistType}) findings\n\n${o.fullOutput}`
@@ -766,12 +815,13 @@ function buildAggregatorUserPrompt(
     }
   })()
 
-  const diffSection = differentialBlock ? `\n${differentialBlock}\n\n---\n` : ''
+  const diffSection      = differentialBlock      ? `\n${differentialBlock}\n\n---\n`      : ''
+  const approvalsSection = pendingApprovalsBlock   ? `\n${pendingApprovalsBlock}\n\n---\n` : ''
 
   return `${triggerContext}
 
 Original task: ${task.prompt}
-${diffSection}
+${diffSection}${approvalsSection}
 The following specialist agents have completed their work. Synthesise their findings into the structured JSON shape defined in your system prompt.
 
 Pay special attention to any "## Verified DB writes" section at the bottom of each specialist's output. That section is authoritative — it lists what actually wrote to the database during the specialist's run. If a specialist's prose claims a write that isn't in its Verified DB writes section, treat that claim as NOT done. If a "⚠️ HALLUCINATION DETECTED" warning appears at the top of a specialist's output, exclude the unverified claims from your synthesis.

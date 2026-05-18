@@ -268,6 +268,7 @@ export function formatDate(d: Date | string, tz = 'Australia/Sydney'): string {
 
 export function formatRelative(d: Date | string, now: Date = new Date()): string {
   d = toDate(d)
+  if (Number.isNaN(d.getTime())) return 'recently'
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.round(diffMs / 60_000);
   if (diffMin < 1) return 'just now';
