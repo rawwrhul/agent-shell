@@ -78,7 +78,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
         type: 'object' as const,
         properties: {
           specialist_type: { type: 'string', description: `One of: ${specialists.map(s => s.type).join(', ')}` },
-          specific_task:   { type: 'string', description: 'The specific, scoped task for this specialist. Be precise — do not just repeat the original prompt.' },
+          specific_task:   { type: 'string', description: 'The CHECKLIST the specialist will execute. Use the CHECKLIST format from the system prompt: SCOPE line, numbered steps with explicit tool + token budget + stop criteria, STOP-after-step-N line, TOTAL BUDGET line. Plain paragraphs cause wandering and budget exhaustion — always use the checklist structure.' },
           context:         { type: 'string', description: 'Key context this specialist needs: domain, credentials available, specific URLs, competitor names, etc.' },
           priority:        { type: 'number', description: 'Execution priority 1-10 (1=highest). Use to sequence when some specialists should start before others.' },
           task_intent: {
@@ -273,6 +273,122 @@ Examples:
 - "Audit /products and propose fixes" → propose_changes (explicit ask)
 
 When unsure: choose propose_changes. The cost of an investigate-mode specialist returning "I noticed X but couldn't file it for you" is small. The cost of a question-mode operator receiving 6 unsolicited approval requests is operator-trust-erosion-large.
+
+## Writing prescriptive task checklists for each specialist
+
+The \`specific_task\` field is the brief the specialist executes. Don't write it as a paragraph of guidance — write it as an EXPLICIT CHECKLIST the specialist follows step-by-step. This is the single biggest lever for run reliability. Specialists with vague paragraphs call 30-50 tools trying to figure out what to do, hit the 600k token cap, and the watchdog kills them at 12 minutes. Specialists with explicit checklists call exactly the tools listed, in order, and converge in 5-15 calls.
+
+Template every specific_task MUST follow:
+
+\`\`\`
+SCOPE: <one-sentence goal in plain language>
+
+CHECKLIST (execute in order, do not skip, do not insert extra steps):
+1. <action verb + object> using <tool name>. Budget: <Nk tokens>. Stop when: <success criteria>.
+2. <action verb + object> using <tool name>. Budget: <Nk tokens>. Stop when: <success criteria>.
+... (3-7 steps total — more than 7 = split into multiple specialist spawns)
+
+STOP after step N. Do not:
+- File additional propose_action calls beyond what the checklist specifies
+- Run extra discovery tools after reaching step N
+- Draft alternative versions of the same change
+
+TOTAL BUDGET: <Mk tokens>. Quick scope: 5-15k. Diagnostic: 15-30k. Audit: 30-80k.
+\`\`\`
+
+### Example checklists for the executors shipped in P0 sessions 1-5
+
+**Blog meta gap fix (quick scope, ~8k):**
+
+\`\`\`
+SCOPE: Find one blog post with the weakest meta and propose a single fix.
+
+CHECKLIST:
+1. Call framer_list_blog_items. Budget: 2k. Stop when: array returned.
+2. Identify the post with the weakest title (length out of 30-60 chars, OR missing the target keyword based on ranking_history). Budget: 2k. Stop when: one slug picked.
+3. Draft improved title (50-60 chars, target keyword in first half) and meta description (140-160 chars, lead with value prop). Budget: 3k. Stop when: both drafted.
+4. File propose_action with toolName='framer_update_blog_meta', toolInput={ slug, newTitle, newDescription }, riskLevel='medium'. Budget: 500. Stop when: approval_id returned.
+
+STOP after step 4. Do not file additional propose_actions. Do not draft alternative versions.
+
+TOTAL BUDGET: 8k.
+\`\`\`
+
+**Body refresh on underperforming post (diagnostic scope, ~30k):**
+
+\`\`\`
+SCOPE: Refresh one underperforming blog post body to improve its ranking.
+
+CHECKLIST:
+1. Call framer_list_blog_items. Budget: 2k. Stop when: list returned.
+2. Cross-ref with ranking_history; pick one post ranking position 11-30 ("almost there" zone). Budget: 3k. Stop when: one slug picked.
+3. web_fetch the current body for that post. Budget: 3k. Stop when: HTML retrieved.
+4. Call dataforseo_serp_overview for the target keyword; identify top 3 competitor angles. Budget: 5k. Stop when: 3 angles identified.
+5. Draft refreshed HTML body adding 1-2 sections that address competitor gaps. Budget: 15k. Stop when: full new HTML written.
+6. File propose_action with toolName='framer_update_blog_body', toolInput={ slug, newContent }, riskLevel='high'. Budget: 500. Stop when: approval_id returned.
+
+STOP after step 6. Do not refresh multiple posts in one run.
+
+TOTAL BUDGET: 30k.
+\`\`\`
+
+**New blog post pitch (diagnostic scope, ~25k):**
+
+\`\`\`
+SCOPE: Identify one high-value topic gap and file a blog pitch.
+
+CHECKLIST:
+1. Call dataforseo_keyword_ideas with seed=<tenant's primary domain>. Budget: 5k. Stop when: top 20 keywords returned.
+2. Filter to keywords with KD <30 AND volume >100 AND commercial intent. Budget: 2k. Stop when: shortlist of 3-5.
+3. Pick the best by intersection of volume × intent × clusters not yet owned. Budget: 2k. Stop when: one keyword picked.
+4. Draft post title, slug, full HTML body (800-1500 words in formattedText), and hero imageUrl. Budget: 15k. Stop when: complete draft written.
+5. File propose_action with toolName='approve_blog_pitch', toolInput={ slug, title, content, imageUrl, whyThisTopic }, riskLevel='high'. Budget: 500. Stop when: approval_id returned.
+
+STOP after step 5. Do not draft a second post (token budget will not support it).
+
+TOTAL BUDGET: 25k.
+\`\`\`
+
+**Marketing page text update (quick scope, ~12k):**
+
+\`\`\`
+SCOPE: Identify one specific text on About/Contact/Resources and propose a one-line improvement.
+
+CHECKLIST:
+1. web_fetch https://<tenant_site>/<page>. Budget: 3k. Stop when: HTML retrieved.
+2. Identify ONE specific text string (headline, subhead, CTA) that's weak or off-message. Budget: 3k. Stop when: exact string identified, copied verbatim.
+3. Draft improved version (preserve intent, stronger language, no jargon). Budget: 3k. Stop when: new string drafted.
+4. File propose_action with toolName='framer_update_marketing_page_text', toolInput={ pagePath, oldText, newText }, riskLevel='high'. Budget: 500. Stop when: approval_id returned.
+
+STOP after step 4. Do not propose multiple text changes in one run.
+
+TOTAL BUDGET: 12k.
+\`\`\`
+
+**Backlink prospect surfacing from the bank (quick scope, ~6k):**
+
+\`\`\`
+SCOPE: Surface 2-3 highest-quality backlink prospects from the bank — no new discovery.
+
+CHECKLIST:
+1. Query seo_opportunities WHERE type='backlink_prospect' AND status='unsurfaced' ORDER BY priority. Budget: 1k. Stop when: top 5 returned.
+2. For each, verify the prospect_domain is still live via web_fetch (HEAD). Budget: 2k. Stop when: 2-3 verified live.
+3. log_opportunity with a draft outreach pitch for each verified prospect (use backlink_template). Budget: 2k. Stop when: 2-3 pitches drafted.
+
+STOP after step 3. Do not run new backlink discovery — that's the backlink_analysis cron's job.
+
+TOTAL BUDGET: 6k.
+\`\`\`
+
+### Critical principles
+
+**Use the opportunity bank first.** For all daily/weekly cron-triggered runs, background crons populate seo_opportunities with discovered opportunities. The daily run should DRAFT from those entries, not re-discover them. If the bank has unsurfaced entries of the right type, the checklist should query the bank as step 1 instead of running discovery tools. This is the difference between 25k token runs (draft from bank) and 200k token runs (rediscover everything).
+
+**Pick ONE thing per specialist spawn.** Don't write a checklist that says "find the 5 worst meta gaps and fix all of them" — that explodes into a 100k token wander. One specialist spawn = one concrete outcome (one propose_action filed, or one opportunity logged). For multi-action runs, spawn multiple specialists in parallel, each with its own focused checklist.
+
+**Be tool-explicit.** Every step names the specific tool. "Analyze the homepage" is wrong (specialist will reach for 5 different tools). "Call framer_get_publish_info, then web_fetch the homepage, then read the page in 4 sections" is right.
+
+**Budget every step.** Token budgets per step force the specialist to be efficient. A step with budget=2k means: stop after one tool call + small reasoning. A step with budget=15k means: ok to draft a full article body. If a step has no budget, the specialist will expand to fill all available context.
 
 ## Rules
 - Spawn ONLY the specialists actually needed for the request. A targeted request may need just one. A full audit needs all.
