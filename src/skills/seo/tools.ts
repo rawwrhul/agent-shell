@@ -421,11 +421,11 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     previewUrl?: string;
   };
 
-  // Phase 9c: approve_blog_pitch validation. Forces the agent to comply
+  // Phase 9c+: blog publish validation — covers approve_blog_pitch AND the deprecated single-stage path so neither can publish without a hero image + ≥2 internal links. Forces the agent to comply
   // with the prompt's image + internal-link requirements rather than
   // skipping them silently. Returns an error string the agent reads as
   // a tool-failure and must redo.
-  if (i.toolName === 'approve_blog_pitch') {
+  if (i.toolName === 'approve_blog_pitch' || i.toolName === 'framer_create_and_publish_blog_post') {
     const ti = (i.toolInput ?? {}) as Record<string, unknown>
     const imageUrl = typeof ti.imageUrl === 'string' ? ti.imageUrl.trim() : ''
     const content  = typeof ti.content  === 'string' ? ti.content        : ''

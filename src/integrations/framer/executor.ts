@@ -222,7 +222,7 @@ export interface CreateAndPublishBlogPostInput {
   slug:      string
   title:     string
   content:   string
-  imageUrl?: string
+  imageUrl:  string   // required — every published post must have a hero
 }
 
 export async function execFramerCreateAndPublishBlogPost(
@@ -232,6 +232,17 @@ export async function execFramerCreateAndPublishBlogPost(
   try {
     if (!input.slug || !input.title || !input.content) {
       return { ok: false, summary: 'slug, title, and content are required', error: 'missing required fields' }
+    }
+    if (!input.imageUrl || !input.imageUrl.trim()) {
+      return {
+        ok:      false,
+        summary: 'imageUrl is required — every published post must have a hero image',
+        error:   'HERO_IMAGE_REQUIRED',
+        detail:  {
+          slug: input.slug,
+          remediation: 'Agent must call pexels_search with a 2-4 word concrete-noun query before proposing publish, then include the returned url_for_post as toolInput.imageUrl.',
+        },
+      }
     }
     const result = await fr.createAndPublishBlogPost(ctx.tenant, input)
     logger.info('exec_framer_create_and_publish_blog_post', {
