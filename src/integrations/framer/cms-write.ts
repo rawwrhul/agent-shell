@@ -7,12 +7,16 @@
 //   1. Open Framer session
 //   2. Refuse if workspace is dirty (pending changes from elsewhere)
 //   3. Find item by slug, capture snapshot of fields about to change
-//   4. addItems with existing ID = update (per framer-api docs)
+//   4. Update existing item via item.setAttributes({ fieldData })
 //   5. publishForAgent: preview → confirm_publish → deploy_to_production
 //   6. On any failure after step 4: restore snapshot via second addItems
 //
-// addItems is upsert by ID: new ID = create, existing ID = update. Tested in
-// scripts/framer-manual-tests/ alongside the create path.
+// Updates go through item.setAttributes(). blog.addItems with an existing id
+// is documented as upsert but actually leaves the modification in a state
+// that fails publishForAgent({ action: 'preview' }) with a missing-version
+// Zod error. setAttributes is the proper per-item update API — the item knows
+// its own internal version. Confirmed via scripts/probe-setattributes-publish.ts.
+// Creates still use blog.addItems but those live in client.ts, not here.
 
 import { logger } from '../../logger'
 import { withFramerSession } from './client'
@@ -147,11 +151,9 @@ export async function applyBlogItemEdit(
 
     // 3. Apply update — addItems with existing id = update behaviour
     const mergedFieldData = { ...item.fieldData, ...fieldUpdates }
-    await blog.addItems([{
-      id:        item.id,
-      slug:      item.slug,
+    await item.setAttributes({
       fieldData: mergedFieldData,
-    }])
+    })
 
     // 4-6. preview → confirm → deploy, with rollback on failure
     let prodResult: any
@@ -178,11 +180,9 @@ export async function applyBlogItemEdit(
             restoreFieldData[snap.fieldId] = { type: snap.type, value: snap.value }
           }
         }
-        await blog.addItems([{
-          id:        item.id,
-          slug:      item.slug,
+        await item.setAttributes({
           fieldData: restoreFieldData,
-        }])
+        })
         logger.info('blog_item_edit_rolled_back', { tenantId: tenant.tenantId, slug, itemId: item.id })
       } catch (rbErr) {
         logger.error('blog_item_edit_rollback_failed', {
