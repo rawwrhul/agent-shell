@@ -14,6 +14,7 @@
 import { Pool } from 'pg'
 import { config } from '../config'
 import { logger } from '../logger'
+import { presenter } from '../core/slack'
 import { enqueueApprovalExecutionJob } from '../queue/execution-producer'
 import { isExecutableToolName } from '../execution/dispatcher'
 
@@ -71,13 +72,45 @@ export async function onApprovalApproved(approvalId: string): Promise<{ enqueued
       toolName: approval.tool_name,
       hint:     'agent proposed this action via propose_action but no execution handler is registered for tool_name. The operator approved it but it will not auto-ship. Add a handler in src/execution/dispatcher.ts if you want auto-execution.',
     })
-    // Mark as manually-resolved-without-auto-exec so it doesn't reprocess
+
+    // Mark as manually-resolved-without-auto-exec so it doesn't reprocess.
     await pool().query(
       `UPDATE approval_requests
-         SET executed_at = now(), executed_outcome = 'approved (no auto-executor — operator handles manually)'
+         SET executed_at = now(),
+             executed_outcome = 'approved (no auto-executor — operator handles manually)'
        WHERE id = $1`,
       [approvalId],
     )
+
+    // Notify the operator. Without this, their Approve click looks like
+    // it worked but nothing ships — trust-eroding silent failure mode.
+    try {
+      const { rows: ctxRows } = await pool().query<{
+        slack_channel_id: string | null
+      }>(
+        `SELECT slack_channel_id FROM approval_requests WHERE id = $1`,
+        [approvalId],
+      )
+      const channelId = ctxRows[0]?.slack_channel_id
+      if (channelId) {
+        await presenter.notifyExecutionResult({
+          tenantId:   approval.tenant_id,
+          channelId,
+          taskId:     approval.task_id,
+          approvalId: approval.id,
+          toolName:   approval.tool_name,
+          ok:         false,
+          summary:    `This action was approved but doesn't have an auto-executor wired up (tool: \`${approval.tool_name}\`). You'll need to do this manually — or wire up a handler in src/execution/dispatcher.ts.`,
+        })
+      } else {
+        logger.warn('no_executor_notification_skipped_no_channel', { approvalId })
+      }
+    } catch (err) {
+      logger.warn('no_executor_notification_failed', {
+        approvalId, err: String(err).slice(0, 200),
+      })
+    }
+
     return { enqueued: false, reason: 'no_executor_registered' }
   }
 

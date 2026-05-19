@@ -190,9 +190,54 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     fs.mkdirSync(path.dirname(reportPath), { recursive: true })
     fs.writeFileSync(reportPath, rawText, 'utf-8')
 
-    // Attempt structured parse. On failure, hand the raw string to the
-    // presenter so the legacy summary path renders rather than failing.
-    const parsed = parseAggregatorOutput(rawText, trigger, task, tenant)
+    // Attempt structured parse. On failure, give the model one round-trip
+    // to fix the JSON before falling back to the legacy summary path.
+    let parsed = parseAggregatorOutput(rawText, trigger, task, tenant)
+
+    if (!parsed.ok) {
+      logger.warn('aggregator_parse_failed_attempting_retry', {
+        taskId: task.id, reason: parsed.reason, rawLength: rawText.length,
+      })
+      try {
+        const retry = await anthropic.messages.create({
+          model:      tenant.agentModel,
+          max_tokens: 8096,
+          system:     cachedSystem(systemPrompt),
+          messages:   [
+            { role: 'user',      content: userPrompt },
+            { role: 'assistant', content: rawText },
+            { role: 'user',      content:
+              `Your previous response failed to parse as valid JSON matching the required schema. ` +
+              `Parser error: ${parsed.reason}\n\n` +
+              `Output ONLY the corrected JSON object. No prose. No markdown fences. ` +
+              `Start with { and end with }. Match the exact schema in the system prompt.`,
+            },
+          ],
+        }, { timeout: 90_000 })
+
+        const retryText = retry.content
+          .filter(b => b.type === 'text')
+          .map(b => (b as Anthropic.TextBlock).text)
+          .join('')
+
+        const retryReportPath = path.resolve(config.PROGRESS_DIR, task.id, 'final-report-retry.md')
+        fs.writeFileSync(retryReportPath, retryText, 'utf-8')
+
+        const retryParsed = parseAggregatorOutput(retryText, trigger, task, tenant)
+        if (retryParsed.ok) {
+          logger.info('aggregator_parse_retry_succeeded', { taskId: task.id })
+          parsed = retryParsed
+        } else {
+          logger.warn('aggregator_parse_retry_also_failed', {
+            taskId: task.id, retryReason: retryParsed.reason,
+          })
+        }
+      } catch (err) {
+        logger.warn('aggregator_parse_retry_threw', {
+          taskId: task.id, err: String(err).slice(0, 300),
+        })
+      }
+    }
 
     if (parsed.ok) {
       await presenter.completeRun(task.id, parsed.report)
