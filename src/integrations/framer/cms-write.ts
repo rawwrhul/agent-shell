@@ -150,7 +150,13 @@ export async function applyBlogItemEdit(
     const before = captureFieldSnapshots(item, changedFieldIds)
 
     // 3. Apply update — addItems with existing id = update behaviour
-    const mergedFieldData = { ...item.fieldData, ...fieldUpdates }
+    const mergedFieldData: Record<string, any> = { ...item.fieldData, ...fieldUpdates }
+    for (const fid in mergedFieldData) {
+      const f = mergedFieldData[fid]
+      if (f && f.value === undefined) {
+        mergedFieldData[fid] = { ...f, value: null }
+      }
+    }
     await item.setAttributes({
       fieldData: mergedFieldData,
     })
