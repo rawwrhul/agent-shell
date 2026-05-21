@@ -130,6 +130,26 @@ function deriveProductionHost(tenant: TenantConfig, hostnames: any[]): string | 
   }
 }
 
+// Framer reads image fields as { id, url, thumbnails, ... } objects but its
+// setAttributes API rejects those with a typia validation error expecting null|string.
+// It expects just the asset id string. Same goes for undefined values on
+// newly-added schema fields that haven't been populated on existing items.
+function sanitizeFieldDataForWrite(data: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const [fid, field] of Object.entries(data)) {
+    const f: any = field
+    if (!f) { out[fid] = f; continue }
+    if (f.type === 'image' && f.value && typeof f.value === 'object' && 'id' in f.value) {
+      out[fid] = { ...f, value: f.value.id }
+    } else if (f.value === undefined) {
+      out[fid] = { ...f, value: null }
+    } else {
+      out[fid] = f
+    }
+  }
+  return out
+}
+
 export async function applyBlogItemEdit(
   tenant: TenantConfig,
   opts:   BlogItemEditOptions,
@@ -150,13 +170,7 @@ export async function applyBlogItemEdit(
     const before = captureFieldSnapshots(item, changedFieldIds)
 
     // 3. Apply update — addItems with existing id = update behaviour
-    const mergedFieldData: Record<string, any> = { ...item.fieldData, ...fieldUpdates }
-    for (const fid in mergedFieldData) {
-      const f = mergedFieldData[fid]
-      if (f && f.value === undefined) {
-        mergedFieldData[fid] = { ...f, value: null }
-      }
-    }
+    const mergedFieldData: Record<string, any> = sanitizeFieldDataForWrite({ ...item.fieldData, ...fieldUpdates })
     await item.setAttributes({
       fieldData: mergedFieldData,
     })
@@ -180,14 +194,14 @@ export async function applyBlogItemEdit(
       })
       // Restore original field values via second addItems
       try {
-        const restoreFieldData = { ...item.fieldData }
+        const restoreFieldData: Record<string, any> = { ...item.fieldData }
         for (const snap of before) {
           if (snap.value !== undefined) {
             restoreFieldData[snap.fieldId] = { type: snap.type, value: snap.value }
           }
         }
         await item.setAttributes({
-          fieldData: restoreFieldData,
+          fieldData: sanitizeFieldDataForWrite(restoreFieldData),
         })
         logger.info('blog_item_edit_rolled_back', { tenantId: tenant.tenantId, slug, itemId: item.id })
       } catch (rbErr) {
