@@ -135,16 +135,17 @@ function deriveProductionHost(tenant: TenantConfig, hostnames: any[]): string | 
 // It expects just the asset id string. Same goes for undefined values on
 // newly-added schema fields that haven't been populated on existing items.
 function sanitizeFieldDataForWrite(data: Record<string, any>): Record<string, any> {
+  // setAttributes is a partial update — only include text-type fields.
+  // Image / date / file etc. have read/write asymmetry that breaks Framer's
+  // validation; sending them back unchanged trips typia and URL constructors.
+  // Omitting them preserves their existing values (setAttributes only touches
+  // what's in the payload).
   const out: Record<string, any> = {}
   for (const [fid, field] of Object.entries(data)) {
     const f: any = field
-    if (!f) { out[fid] = f; continue }
-    if (f.type === 'image' && f.value && typeof f.value === 'object' && 'id' in f.value) {
-      out[fid] = { ...f, value: f.value.id }
-    } else if (f.value === undefined) {
-      out[fid] = { ...f, value: null }
-    } else {
-      out[fid] = f
+    if (!f) continue
+    if (f.type === 'string' || f.type === 'formattedText') {
+      out[fid] = f.value === undefined ? { ...f, value: null } : f
     }
   }
   return out
