@@ -11,6 +11,7 @@ export type AgentType =
   | 'researcher'
   | 'general'
   | 'seo-loop'                       // R3
+  | 'quoting'                        // Quoting agent (HD Level 2 Electrician)
 
 export interface TenantConfig {
   tenantId:           string

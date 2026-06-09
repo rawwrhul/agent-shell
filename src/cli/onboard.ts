@@ -20,7 +20,7 @@ async function main() {
   const tenantId    = await io.question('Tenant slug (lowercase, hyphens only, e.g. "acme-corp"): ')
   const billingTag  = await io.question(`Billing tag (e.g. "${tenantId}-seo"): `)
 
-  console.log('\nAgent types: seo-auditor | content-writer | data-analyst | researcher | general')
+  console.log('\nAgent types: seo-auditor | seo-loop | content-writer | data-analyst | researcher | general | quoting')
   const agentType   = await io.question('Agent type: ') as AgentType
 
   const skillsRaw   = await io.question('Skills (comma-separated, e.g. "seo-auditor,brand-voice"): ')

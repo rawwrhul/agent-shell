@@ -16,6 +16,7 @@ export const CGS_CREDENTIALS: CredentialDef[] = [
   { key: 'dataforseo_login',  label: 'DataForSEO Login',  owner: 'cgs', required: false, description: 'SERP data, keyword difficulty, search volume', howToGet: 'DataForSEO dashboard → API access' },
   { key: 'dataforseo_password', label: 'DataForSEO Password', owner: 'cgs', required: false, description: 'DataForSEO API password', howToGet: 'DataForSEO dashboard → API access' },
   { key: 'voyage_api_key',    label: 'Voyage API Key',    owner: 'cgs', required: false, description: 'High-quality embeddings for pgvector semantic memory', howToGet: 'dash.voyageai.com → API keys' },
+  { key: 'assemblyai_api_key', label: 'AssemblyAI API Key', owner: 'cgs', required: false, description: 'Voice-note transcription for the quoting agent (AU English + trade vocab)', howToGet: 'assemblyai.com → Dashboard → API key' },
 ]
 
 export const AGENT_CREDENTIAL_MANIFESTS: Record<string, CredentialDef[]> = {
@@ -40,5 +41,8 @@ export const AGENT_CREDENTIAL_MANIFESTS: Record<string, CredentialDef[]> = {
   ],
   'general': [
     { key: 'target_domain', label: 'Target Domain (optional)', owner: 'client', required: false, description: 'Primary domain for web tasks', howToGet: 'e.g. https://acme.com' },
+  ],
+  'quoting': [
+    { key: 'electrician_email', label: 'Electrician Delivery Email', owner: 'client', required: true,  description: 'Where the approved quote PDF is emailed (the electrician, not the customer, in MVP)', howToGet: 'The electrician’s working inbox' },
   ],
 }
