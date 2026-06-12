@@ -39,6 +39,26 @@ export interface ActionContext {
   slackChannelId: string;
   slackMessageTs: string;
   client:         WebClient;
+  /** Tenant whose Slack app received the click — used to verify the
+   *  approval being acted on belongs to the SAME tenant. */
+  tenantId:       string;
+}
+
+/**
+ * Cross-tenant guard. An approval UUID arriving from tenant A's workspace
+ * must reference tenant A's approval. UUIDs are unguessable, but task and
+ * approval IDs leak into logs, traces, and screenshots — defense in depth
+ * costs one comparison.
+ */
+function crossTenantBlocked(ctx: ActionContext, approvalTenantId: string): boolean {
+  if (approvalTenantId === ctx.tenantId) return false;
+  logger.warn('hitl_cross_tenant_blocked', {
+    approvalId: ctx.approvalId,
+    approvalTenant: approvalTenantId,
+    clickingTenant: ctx.tenantId,
+    slackUserId: ctx.slackUserId,
+  });
+  return true;
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -47,6 +67,10 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
   const approval = await getApproval(pool(), ctx.approvalId);
   if (!approval) {
     await postEphemeral(ctx, "Couldn't find that approval — may have been resolved.");
+    return;
+  }
+  if (crossTenantBlocked(ctx, approval.tenantId)) {
+    await postEphemeral(ctx, "That approval doesn't belong to this workspace.");
     return;
   }
   if (approval.status !== 'pending') {
@@ -118,6 +142,7 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
 export async function handleReject(ctx: ActionContext, rejectionReason?: string): Promise<void> {
   const approval = await getApproval(pool(), ctx.approvalId);
   if (!approval || approval.status !== 'pending') return;
+  if (crossTenantBlocked(ctx, approval.tenantId)) return;
 
   const resolved = await resolveApproval(pool(), {
     approvalId: ctx.approvalId,
@@ -154,6 +179,7 @@ export async function handleReject(ctx: ActionContext, rejectionReason?: string)
 export async function handleDefer24h(ctx: ActionContext): Promise<void> {
   const approval = await getApproval(pool(), ctx.approvalId);
   if (!approval || approval.status !== 'pending') return;
+  if (crossTenantBlocked(ctx, approval.tenantId)) return;
 
   const deferUntil = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const resolved = await resolveApproval(pool(), {
@@ -177,6 +203,10 @@ export async function handleViewDraft(ctx: ActionContext, triggerId: string): Pr
   const approval = await getApproval(pool(), ctx.approvalId);
   if (!approval) {
     await postEphemeral(ctx, "Couldn't find that approval.");
+    return;
+  }
+  if (crossTenantBlocked(ctx, approval.tenantId)) {
+    await postEphemeral(ctx, "That approval doesn't belong to this workspace.");
     return;
   }
 

@@ -247,7 +247,7 @@ export async function startTenantBot(tenant: TenantConfig) {
       case 'history': {
         const taskId = rest[0]
         if (!taskId) { await respond('Usage: `/agent history <task-id>`'); return }
-        const runs = await getRunHistory(taskId)
+        const runs = await getRunHistory(taskId, tenant.tenantId)
         if (!runs.length) { await respond(`No history for \`${taskId}\``); return }
         const lines = runs.map((r, i) =>
           `• Session ${i + 1}: ${r.status} | ${r.tokenCount.toLocaleString()} tokens | ${r.summary ?? 'no summary'}`
@@ -261,7 +261,7 @@ export async function startTenantBot(tenant: TenantConfig) {
     }
   })
 
-  registerHitlActionHandlers(app)
+  registerHitlActionHandlers(app, tenant.tenantId)
 
   // Phase 9f: catch Bolt-level errors before they propagate as uncaught.
   // Logged with tenant context so we can attribute socket noise to the

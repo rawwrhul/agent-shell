@@ -23,10 +23,10 @@ import { logger } from '../logger';
 export * from './state-store';
 export * from './handlers';
 
-export function registerHitlActionHandlers(app: App): void {
+export function registerHitlActionHandlers(app: App, tenantId: string): void {
   app.action<BlockAction<ButtonAction>>('approval_approve', async ({ ack, body, action, client }) => {
     await ack();
-    const ctx = buildCtx(body, action, client);
+    const ctx = buildCtx(body, action, client, tenantId);
     if (!ctx) return;
     await handleApprove(ctx).catch((err) =>
       logger.error('approval_approve_failed', { err: String(err) }),
@@ -39,7 +39,7 @@ export function registerHitlActionHandlers(app: App): void {
   // which teaches the agent nothing. Optional field — operator can submit blank.
   app.action<BlockAction<ButtonAction>>('approval_reject', async ({ ack, body, action, client }) => {
     await ack();
-    const ctx = buildCtx(body, action, client);
+    const ctx = buildCtx(body, action, client, tenantId);
     if (!ctx) return;
     const triggerId = (body as { trigger_id?: string }).trigger_id;
     if (!triggerId) {
@@ -102,6 +102,7 @@ export function registerHitlActionHandlers(app: App): void {
       slackChannelId: metadata.slackChannelId,
       slackMessageTs: metadata.slackMessageTs,
       client,
+      tenantId,
     };
     await handleReject(ctx, reason).catch((err) =>
       logger.error('approval_reject_modal_submission_failed', { err: String(err) }),
@@ -110,7 +111,7 @@ export function registerHitlActionHandlers(app: App): void {
 
   app.action<BlockAction<ButtonAction>>('approval_defer', async ({ ack, body, action, client }) => {
     await ack();
-    const ctx = buildCtx(body, action, client);
+    const ctx = buildCtx(body, action, client, tenantId);
     if (!ctx) return;
     await handleDefer24h(ctx).catch((err) =>
       logger.error('approval_defer_failed', { err: String(err) }),
@@ -119,7 +120,7 @@ export function registerHitlActionHandlers(app: App): void {
 
   app.action<BlockAction<ButtonAction>>('approval_view_draft', async ({ ack, body, action, client }) => {
     await ack();
-    const ctx = buildCtx(body, action, client);
+    const ctx = buildCtx(body, action, client, tenantId);
     if (!ctx) return;
     const triggerId = (body as { trigger_id?: string }).trigger_id;
     if (!triggerId) {
@@ -137,6 +138,7 @@ function buildCtx(
   body: BlockAction<ButtonAction>,
   action: ButtonAction,
   client: WebClient,
+  tenantId: string,
 ): ActionContext | null {
   const approvalId = action.value;
   const slackUserId = body.user?.id;
@@ -152,5 +154,5 @@ function buildCtx(
     });
     return null;
   }
-  return { approvalId, slackUserId, slackChannelId, slackMessageTs, client };
+  return { approvalId, slackUserId, slackChannelId, slackMessageTs, client, tenantId };
 }

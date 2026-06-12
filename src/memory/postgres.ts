@@ -19,8 +19,13 @@ export async function completeRunRecord(p: { id: string; status: AgentStatus; to
   )
 }
 
-export async function getRunHistory(taskId: string): Promise<RunRecord[]> {
-  const res = await pool.query('SELECT * FROM run_records WHERE task_id=$1 ORDER BY started_at ASC', [taskId])
+export async function getRunHistory(taskId: string, tenantId: string): Promise<RunRecord[]> {
+  // tenant_id predicate is an isolation guard: task UUIDs leak into logs
+  // and screenshots, and /agent history must never show another tenant's
+  // runs to whoever pastes one.
+  const res = await pool.query(
+    'SELECT * FROM run_records WHERE task_id=$1 AND tenant_id=$2 ORDER BY started_at ASC',
+    [taskId, tenantId])
   return res.rows
 }
 
