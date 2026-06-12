@@ -95,8 +95,8 @@ export async function bootstrapSchedules(): Promise<void> {
   for (const s of schedules) {
     // Weekly runs deprecated 2026-05-16. Filter here as a safety net so
     // weekly schedules can't fire even if a DB row is still enabled.
-    // To re-enable: remove this block AND uncomment the weekly call in
-    // applyDefaultSchedulesFor (src/scheduler/config.ts).
+    // To re-enable: remove this block AND set enabled=true on the weekly
+    // row in tenant_schedules (schedules are DB-driven; no code config).
     if (s.runKind === 'weekly') {
       logger.info('schedule_skipped_weekly_deprecated', {
         tenantId: s.tenantId, runKind: s.runKind,

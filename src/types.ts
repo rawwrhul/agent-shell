@@ -42,17 +42,6 @@ export interface AgentJob {
   jobType: JobType; task: AgentTask; subTaskId?: string
 }
 
-export interface FeatureItem {
-  id: string; category: string; description: string; steps: string[]
-  passes: boolean; completedAt?: string; notes?: string
-}
-
-export interface ProgressFile {
-  taskId: string; agentType: string; createdAt: string; updatedAt: string
-  sessionCount: number; features: FeatureItem[]
-  recentSummary: string; nextPriority: string; gitCommits: string[]
-}
-
 export interface ToolUseEvent {
   toolName: string; toolInput: Record<string, unknown>; toolUseId: string
   sessionId: string; taskId: string; tenantId: string
