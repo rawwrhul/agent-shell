@@ -9,10 +9,19 @@ import { startScheduleWorker } from './scheduler/worker'
 import http from 'http'
 
 import { startExecutionWorker } from './execution/worker';
+import { runPreflightChecks } from './core/preflight'
+import { reapStrandedRuns } from './core/slack/reaper'
+import { pool as slackPool } from './memory/postgres'
 
 async function main() {
   logger.info('cgs_agent_shell_starting', { env: process.env.NODE_ENV, pid: process.pid })
+  await runPreflightChecks()
   await startAllTenantBots()
+  // Reap runs stranded by the previous revision AFTER bots are up (failRun
+  // edits Slack anchors, which needs the tenant apps connected) but BEFORE
+  // schedules fire new work.
+  await reapStrandedRuns(slackPool).catch(err =>
+    logger.error('reaper_failed', { err: String(err).slice(0, 300) }))
   await bootstrapSchedules()
   startScheduleWorker()
 

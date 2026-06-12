@@ -111,6 +111,26 @@ export function startExecutionWorker(): Worker {
 async function processJob(job: Job<ExecutionJobPayload>): Promise<void> {
   const { tenantId, taskId, approvalId, toolName, toolInput } = job.data
 
+  // 0) Idempotency guard. Publishing is not idempotent, and this job can
+  //    arrive more than once: BullMQ stall-reassignment (maxStalledCount > 0),
+  //    manual re-fires from ops scripts, or a duplicate enqueue from a
+  //    double-clicked approval. If this approval+tool has ALREADY succeeded,
+  //    executing again would double-publish to the client's live site —
+  //    skip and report success instead.
+  const prior = await pool().query(
+    `SELECT 1 FROM execution_jobs
+      WHERE approval_id = $1 AND tool_name = $2 AND status = 'success'
+      LIMIT 1`,
+    [approvalId, toolName],
+  )
+  if (prior.rows.length > 0) {
+    logger.warn('execution_skipped_already_succeeded', {
+      approvalId, toolName, taskId,
+      hint: 'Duplicate delivery (stall-reassignment, re-fire, or double enqueue). The original execution already succeeded; not re-publishing.',
+    })
+    return
+  }
+
   // 1) Insert execution_jobs row (or mark running if already created)
   await pool().query(
     `INSERT INTO execution_jobs (tenant_id, approval_id, task_id, tool_name, tool_input, status, started_at, attempts)
