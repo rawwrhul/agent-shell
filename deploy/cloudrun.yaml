@@ -52,6 +52,9 @@ spec:
             - name: LANGFUSE_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: langfuse-secret-key, key: latest }
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: voyage-api-key, key: latest }
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef: { name: redis-url, key: latest }

@@ -12,6 +12,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../../config'
 import { logger } from '../../logger'
+import { callAnthropic } from '../../lib/anthropic-call'
 import { AdHocMatch, AD_HOC_CONFIDENCE_THRESHOLD } from './types'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
@@ -135,11 +136,11 @@ If types is empty, set confidence to 0.`
 
   let parsed: AdHocMatch | null = null
   try {
-    const resp = await anthropic.messages.create({
+    const resp = await callAnthropic(anthropic, {
       model:      CLASSIFIER_MODEL,
       max_tokens: 300,
       messages:   [{ role: 'user', content: classifierPrompt }],
-    })
+    }, { label: 'adhoc-classifier' })
     const text = resp.content
       .filter((b) => b.type === 'text')
       .map((b) => (b.type === 'text' ? b.text : ''))

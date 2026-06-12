@@ -12,6 +12,7 @@ const schema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().min(1, 'LANGFUSE_PUBLIC_KEY is required'),
   LANGFUSE_SECRET_KEY: z.string().min(1, 'LANGFUSE_SECRET_KEY is required'),
   LANGFUSE_HOST:      z.string().url().default('https://cloud.langfuse.com'),
+  VOYAGE_API_KEY:     z.string().optional(),
   NODE_ENV:           z.enum(['development', 'staging', 'production']).default('development'),
   AGENT_MODEL:        z.string().default('claude-sonnet-4-6'),
   AGENT_MAX_TURNS:    z.coerce.number().default(50),

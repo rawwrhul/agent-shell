@@ -7,6 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../config'
 import { logger } from '../logger'
+import { callAnthropic } from '../lib/anthropic-call'
 import { REFINER_SYSTEM_PROMPT, buildRefinerUserMessage } from './prompts'
 import { cachedSystem } from '../lib/prompt-cache'
 
@@ -33,7 +34,7 @@ export interface RefinerOutput {
 export async function runRefiner(input: RefinerInput): Promise<RefinerOutput> {
   const userMessage = buildRefinerUserMessage(input)
 
-  const response = await anthropic.messages.create({
+  const response = await callAnthropic(anthropic, {
     // Refiner is a single-call structured-JSON task with no reasoning chain
     // or tool use — ideal Haiku candidate. Saves ~67% on every thread feedback
     // call. Override per-tenant via tenant.agentModel if quality regresses.
@@ -43,7 +44,7 @@ export async function runRefiner(input: RefinerInput): Promise<RefinerOutput> {
     // subsequent calls within the 5-min cache TTL pay 10% of prefix cost.
     system:     cachedSystem(REFINER_SYSTEM_PROMPT),
     messages:   [{ role: 'user', content: userMessage }],
-  })
+  }, { label: 'refiner' })
 
   const textBlock = response.content.find(b => b.type === 'text')
   if (!textBlock || textBlock.type !== 'text') {

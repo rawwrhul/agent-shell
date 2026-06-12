@@ -20,6 +20,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../../config'
 import { logger } from '../../logger'
+import { callAnthropic } from '../../lib/anthropic-call'
 import type { ResolvedFinding, Severity } from './types'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
@@ -79,11 +80,11 @@ export async function synthesizeAudit(args: {
   })
 
   try {
-    const resp = await anthropic.messages.create({
+    const resp = await callAnthropic(anthropic, {
       model:      SYNTHESIS_MODEL,
       max_tokens: MAX_TOKENS,
       messages: [{ role: 'user', content: prompt }],
-    })
+    }, { label: 'audit-synthesis' })
 
     const text = resp.content
       .filter((b) => b.type === 'text')

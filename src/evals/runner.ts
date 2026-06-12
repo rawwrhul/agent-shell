@@ -4,6 +4,7 @@ import { EvalTask, EvalResult } from '../types'
 import { AGENT_TOOLS } from '../agents/tools'
 import { sampleEvalTasks } from './tasks/sample'
 import { logger } from '../logger'
+import { callAnthropic } from '../lib/anthropic-call'
 
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -28,13 +29,13 @@ async function runSingle(task: EvalTask): Promise<EvalResult> {
 
   try {
     while (true) {
-      const res = await client.messages.create({
+      const res = await callAnthropic(client, {
         model:      config.AGENT_MODEL,
         max_tokens: 4096,
         tools:      AGENT_TOOLS,
         messages,
         system:     'You are an expert agent being evaluated. Complete the task as accurately as possible.',
-      })
+      }, { label: 'evals' })
 
       tokenCount += (res.usage?.input_tokens ?? 0) + (res.usage?.output_tokens ?? 0)
 

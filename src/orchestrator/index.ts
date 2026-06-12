@@ -29,6 +29,7 @@ import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
 import { getMemoryContext, toPromptString } from '../memory/runtime'
 import { cachedSystem, cachedTools } from '../lib/prompt-cache'
+import { callAnthropic } from '../lib/anthropic-call'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -114,13 +115,13 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
     let turns = 0
     while (turns < 10) {
       turns++
-      const response = await anthropic.messages.create({
+      const response = await callAnthropic(anthropic, {
         model:      tenant.agentModel,
         max_tokens: 4096,
         system:     cachedSystem(system),
         tools:      cachedTools(orchestratorTools),
         messages,
-      })
+      }, { label: 'orchestrator' })
 
       if (response.stop_reason === 'tool_use') {
         const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[]

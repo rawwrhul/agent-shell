@@ -38,6 +38,7 @@ import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
 import type { FinalReport } from '../core/slack/blocks/types'
 import { cachedSystem } from '../lib/prompt-cache'
+import { callAnthropic } from '../lib/anthropic-call'
 import {
   loadDailyDifferential, loadWeeklyDifferential,
   formatDailyDifferentialForPrompt, formatWeeklyDifferentialForPrompt,
@@ -164,7 +165,10 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     const pendingApprovalsBlock = await loadPendingApprovalsForPrompt(task.id)
     const userPrompt = buildAggregatorUserPrompt(task, outputs, trigger, differentialBlock, pendingApprovalsBlock)
 
-    const response = await anthropic.messages.create({
+    // Idle-timeout streaming replaces the old 180s wall-clock SDK timeout:
+    // long synthesis streams to completion; only stream silence aborts. The
+    // 5-min job watchdog in queue/worker.ts remains the outer envelope.
+    const response = await callAnthropic(anthropic, {
       model:      tenant.agentModel,
       max_tokens: 8096,
       // Cache the system prompt — it's deterministic per (trigger, tenant)
@@ -172,13 +176,7 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
       // outputs (in messages) vary per run and stay uncached.
       system:     cachedSystem(systemPrompt),
       messages:   [{ role: 'user', content: userPrompt }],
-    }, {
-      // Explicit 3-min timeout. Default SDK timeout is 10min which is
-      // longer than BullMQ's default 30s lockDuration — caused silent
-      // hangs + retry cascades. 180s fits comfortably under the new
-      // 5-min lockDuration set in src/queue/worker.ts.
-      timeout: 180_000,
-    })
+    }, { label: 'aggregator' })
 
     const rawText = response.content
       .filter(b => b.type === 'text')
@@ -199,7 +197,7 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
         taskId: task.id, reason: parsed.reason, rawLength: rawText.length,
       })
       try {
-        const retry = await anthropic.messages.create({
+        const retry = await callAnthropic(anthropic, {
           model:      tenant.agentModel,
           max_tokens: 8096,
           system:     cachedSystem(systemPrompt),
@@ -213,7 +211,7 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
               `Start with { and end with }. Match the exact schema in the system prompt.`,
             },
           ],
-        }, { timeout: 90_000 })
+        }, { label: 'aggregator-parse-retry' })
 
         const retryText = retry.content
           .filter(b => b.type === 'text')

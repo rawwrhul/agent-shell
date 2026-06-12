@@ -59,6 +59,7 @@ import {
   CRAWLER_TOOLS, executeCrawlerTool, isCrawlerToolName,
 } from '../core/crawler'
 import { cachedSystem, cachedTools } from '../lib/prompt-cache'
+import { callAnthropic } from '../lib/anthropic-call'
 import {
   buildIntegrationToolsForTenant,
   isIntegrationToolName,
@@ -73,21 +74,12 @@ const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
 // ── Iteration cap and retry policy ────────────────────────────────────────
 const HARD_ITERATION_CAP = 15
-const MAX_API_RETRIES = 3
-const RETRY_BASE_DELAY_MS = 1000
-const PER_CALL_TIMEOUT_MS = 90_000
 
 // Phase 8.5: wall-clock + token enforcement per specialist run.
 // Caps both runaway loops and unbounded research. Tenant.tokenBudgetPerRun
 // is the soft ceiling per specialist; if it overruns we break out with a
 // graceful summary rather than letting the loop continue burning credits.
 const MAX_SPECIALIST_DURATION_MS = 8 * 60 * 1000   // 8 minutes hard ceiling
-
-const TRANSIENT_ERROR_CODES = new Set([
-  'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND', 'ECONNREFUSED',
-])
-
-const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504])
 
 /** SEO tool names that mutate DB state. Stripped in investigate mode. */
 const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
@@ -98,60 +90,15 @@ const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
   'upsert_cluster',
 ])
 
-interface AnthropicErrorLike {
-  code?: string
-  status?: number
-  cause?: { code?: string }
-  message?: string
-}
-
-function isTransientError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false
-  const e = err as AnthropicErrorLike
-  const code = e.code ?? e.cause?.code
-  if (code && TRANSIENT_ERROR_CODES.has(code)) return true
-  if (typeof e.status === 'number' && TRANSIENT_HTTP_STATUSES.has(e.status)) return true
-  const msg = (e.message ?? '').toLowerCase()
-  if (msg.includes('econnreset') || msg.includes('timeout') || msg.includes('socket hang up')) {
-    return true
-  }
-  return false
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms))
-}
-
+/**
+ * All Anthropic calls go through the shared idle-timeout streaming wrapper.
+ * Wall-clock per-call timeouts are gone: long healthy generations stream to
+ * completion; only stream SILENCE (60s default) aborts and retries.
+ */
 async function callAnthropicWithRetry(
   params: Anthropic.MessageCreateParamsNonStreaming,
-  attempt = 1,
 ): Promise<Anthropic.Message> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), PER_CALL_TIMEOUT_MS)
-
-  try {
-    const response = await anthropic.messages.create(params, {
-      signal: controller.signal,
-    })
-    return response
-  } catch (err) {
-    if (attempt >= MAX_API_RETRIES || !isTransientError(err)) {
-      logger.error('anthropic_call_failed', {
-        attempt, max: MAX_API_RETRIES,
-        transient: isTransientError(err),
-        err: String(err).slice(0, 400),
-      })
-      throw err
-    }
-    const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1)
-    logger.warn('anthropic_call_retrying', {
-      attempt, nextAttempt: attempt + 1, delayMs: delay, err: String(err).slice(0, 200),
-    })
-    await sleep(delay)
-    return callAnthropicWithRetry(params, attempt + 1)
-  } finally {
-    clearTimeout(timeout)
-  }
+  return callAnthropic(anthropic, params, { label: 'subagent' })
 }
 
 // ── Tool builders ─────────────────────────────────────────────────────────

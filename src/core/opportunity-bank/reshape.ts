@@ -13,6 +13,7 @@ import { v4 as uuid } from 'uuid'
 import { pool } from '../../memory/postgres'
 import { config } from '../../config'
 import { logger } from '../../logger'
+import { callAnthropic } from '../../lib/anthropic-call'
 import {
   FLAT_REJECTION_KEYWORDS, FLAT_REJECTION_MAX_LENGTH,
   RESHAPE_MAX_DEPTH,
@@ -173,11 +174,11 @@ Return ONLY a JSON object, no preamble:
 
   let parsed: { target: string | null; description: string; rationale: string } | null = null
   try {
-    const resp = await anthropic.messages.create({
+    const resp = await callAnthropic(anthropic, {
       model:      RESHAPE_MODEL,
       max_tokens: 1000,
       messages:   [{ role: 'user', content: prompt }],
-    })
+    }, { label: 'opportunity-reshape' })
     const text = resp.content
       .filter((b) => b.type === 'text')
       .map((b) => (b.type === 'text' ? b.text : ''))

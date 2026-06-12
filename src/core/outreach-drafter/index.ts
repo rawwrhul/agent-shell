@@ -27,6 +27,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../../config'
 import { logger } from '../../logger'
+import { callAnthropic } from '../../lib/anthropic-call'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 const DRAFT_MODEL = 'claude-sonnet-4-5-20250929'
@@ -77,11 +78,11 @@ export async function draftOutreach(input: DraftInput): Promise<DraftOutput | nu
   const prompt = buildPrompt(input)
 
   try {
-    const resp = await anthropic.messages.create({
+    const resp = await callAnthropic(anthropic, {
       model:      DRAFT_MODEL,
       max_tokens: 1500,
       messages:   [{ role: 'user', content: prompt }],
-    })
+    }, { label: 'outreach-drafter' })
     const text = resp.content
       .filter((b) => b.type === 'text')
       .map((b) => (b.type === 'text' ? b.text : ''))
