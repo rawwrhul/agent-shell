@@ -34,24 +34,31 @@ export async function listActiveTenants(): Promise<TenantRow[]> {
 }
 
 export async function registerTenant(params: {
-  tenantId:      string
-  clientName:    string
-  agentType:     AgentType
+  tenantId:       string
+  clientName:     string
+  agentType:      AgentType
   slackChannelId: string
-  hitlSheetName?: string
-  billingTag:    string
-  skills:        string[]
-  agentModel?:   string
-  tokenBudget?:  number
+  billingTag:     string
+  skills:         string[]
+  agentModel?:    string
+  tokenBudget?:   number
+  // Onboarding-fix additions — runtime columns from later migrations that
+  // the old CLI never populated (tenants used to come up blind):
+  targetDomain?:        string
+  competitorDomains?:   string[]
+  cronTimezone?:        string
+  businessBrief?:       string
+  operatorSlackUserId?: string
 }): Promise<void> {
   await pool.query(
     `INSERT INTO tenants (
       tenant_id, client_name, agent_type, agent_model, token_budget_per_run,
-      skills, slack_channel_id, hitl_sheet_name, billing_tag, is_active,
+      skills, slack_channel_id, billing_tag, is_active,
       secret_slack_bot_token, secret_slack_app_token, secret_slack_signing_secret,
-      secret_hitl_spreadsheet_id, secret_google_sa_email, secret_google_private_key,
+      target_domain, competitor_domains, cron_timezone,
+      business_brief, operator_slack_user_id,
       created_at, updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13,$14,$15,NOW(),NOW())`,
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())`,
     [
       params.tenantId,
       params.clientName,
@@ -60,17 +67,59 @@ export async function registerTenant(params: {
       params.tokenBudget ?? config.TOKEN_BUDGET_PER_RUN,
       JSON.stringify(params.skills),
       params.slackChannelId,
-      params.hitlSheetName ?? 'Approvals',
       params.billingTag,
       `${params.tenantId}-slack-bot-token`,
       `${params.tenantId}-slack-app-token`,
       `${params.tenantId}-slack-signing-secret`,
-      `${params.tenantId}-hitl-spreadsheet-id`,
-      `${params.tenantId}-google-sa-email`,
-      `${params.tenantId}-google-private-key`,
+      params.targetDomain ?? null,
+      params.competitorDomains ?? null,
+      params.cronTimezone ?? 'Australia/Sydney',
+      params.businessBrief ?? null,
+      params.operatorSlackUserId ?? null,
     ]
   )
   logger.info('tenant_registered', { tenantId: params.tenantId, client: params.clientName })
+}
+
+/**
+ * Write the integrations array + per-integration config columns. Separate
+ * from registerTenant because these columns come from the hand-run
+ * sql/20260512-integrations-and-executions.sql rather than the db:migrate
+ * chain — on an environment that never ran it, this UPDATE fails with a
+ * clear hint instead of breaking base registration.
+ */
+export async function setTenantIntegrationConfig(params: {
+  tenantId:          string
+  integrations:      string[]
+  gscSiteUrl?:       string
+  ga4PropertyId?:    string
+  framerProjectUrl?: string
+}): Promise<void> {
+  try {
+    await pool.query(
+      `UPDATE tenants
+          SET integrations       = $2::jsonb,
+              gsc_site_url       = $3,
+              ga4_property_id    = $4,
+              framer_project_url = $5,
+              updated_at         = NOW()
+        WHERE tenant_id = $1`,
+      [
+        params.tenantId,
+        JSON.stringify(params.integrations),
+        params.gscSiteUrl ?? null,
+        params.ga4PropertyId ?? null,
+        params.framerProjectUrl ?? null,
+      ],
+    )
+    logger.info('tenant_integrations_set', { tenantId: params.tenantId, integrations: params.integrations })
+  } catch (err) {
+    logger.error('tenant_integrations_set_failed', {
+      tenantId: params.tenantId, err: String(err).slice(0, 200),
+      hint: 'If columns are missing, run sql/20260512-integrations-and-executions.sql in the Supabase SQL editor first, then re-run: npm run onboard:integrations',
+    })
+    throw err
+  }
 }
 
 export function invalidateCache(tenantId: string) {
@@ -80,13 +129,10 @@ export function invalidateCache(tenantId: string) {
 // ── Secret resolution ─────────────────────────────────────────────────────────
 
 async function resolve(row: TenantRow): Promise<TenantConfig> {
-  const [bot, app, sig, sheet, saEmail, saKey] = await Promise.all([
+  const [bot, app, sig] = await Promise.all([
     getSecret(row.secret_slack_bot_token),
     getSecret(row.secret_slack_app_token),
     getSecret(row.secret_slack_signing_secret),
-    getSecret(row.secret_hitl_spreadsheet_id),
-    getSecret(row.secret_google_sa_email),
-    getSecret(row.secret_google_private_key),
   ])
 
   return {
@@ -98,10 +144,6 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     slackAppToken:      app,
     slackSigningSecret: sig,
     slackChannelId:     row.slack_channel_id,
-    hitlSpreadsheetId:  sheet,
-    hitlSheetName:      row.hitl_sheet_name,
-    googleSaEmail:      saEmail,
-    googlePrivateKey:   saKey,
     agentType:          row.agent_type,
     agentModel:         row.agent_model,
     tokenBudgetPerRun:  row.token_budget_per_run,

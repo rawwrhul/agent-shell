@@ -233,14 +233,6 @@ function buildApprovalActions(item: ApprovalItem): KnownBlock {
     { actionId: 'approval_reject',     text: 'Reject',     value: item.id, style: 'danger' },
     { actionId: 'approval_defer',      text: 'Defer 24h',  value: item.id },
   ];
-  if (item.approvalUrl) {
-    buttons.push({
-      actionId: 'approval_open_sheets',
-      text: 'Open in Sheets ↗',
-      value: item.id,
-      url: item.approvalUrl,
-    });
-  }
   return actions(`approval_${item.id}`, buttons);
 }
 

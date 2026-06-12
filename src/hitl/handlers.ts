@@ -22,7 +22,6 @@ import {
   resolveApproval,
   type ApprovalRow,
 } from './state-store';
-import { updateApprovalRowStatus } from './sheets';
 import { presenter } from '../core/slack';
 import { getRun } from '../core/slack/state-store';
 import { getTenant } from '../tenants/registry';
@@ -89,10 +88,6 @@ export async function handleApprove(ctx: ActionContext): Promise<void> {
     }
   }
 
-  // Mirror to Sheet (best-effort) so the persistent record stays in sync.
-  await mirrorResolutionToSheet(resolved, 'approved', ctx.slackUserId).catch(() => {
-    /* swallowed — mirror failures already logged inside */
-  });
 
   // Chunk 2c: capture the terminal outcome in L2 memory.
   void onApprovalResolved({
@@ -134,8 +129,6 @@ export async function handleReject(ctx: ActionContext, rejectionReason?: string)
 
   await editMessageToResolved(ctx, resolved, 'rejected');
 
-  // Mirror to Sheet (best-effort)
-  await mirrorResolutionToSheet(resolved, 'rejected', ctx.slackUserId, rejectionReason).catch(() => {});
 
   // Chunk 2c: capture the terminal outcome (with operator's reason) in L2 memory.
   void onApprovalResolved({
@@ -178,10 +171,6 @@ export async function handleDefer24h(ctx: ActionContext): Promise<void> {
     approvalId: ctx.approvalId, by: ctx.slackUserId, until: deferUntil.toISOString(),
   });
 
-  // Mirror to Sheet (best-effort) — surfaces deferral on the audit record
-  if (resolved) {
-    await mirrorResolutionToSheet(resolved, 'deferred', ctx.slackUserId).catch(() => {});
-  }
 }
 
 export async function handleViewDraft(ctx: ActionContext, triggerId: string): Promise<void> {
@@ -217,35 +206,6 @@ export async function handleViewDraft(ctx: ActionContext, triggerId: string): Pr
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/**
- * Mirror a PG resolution back to the Sheet row so the persistent audit
- * record reflects the decision. Best-effort: any failure (Sheets API
- * down, row not found, auth issue) is logged inside updateApprovalRowStatus
- * and swallowed here. The PG row remains authoritative.
- */
-async function mirrorResolutionToSheet(
-  approval: ApprovalRow,
-  decision: 'approved' | 'rejected' | 'deferred',
-  resolvedBy: string,
-  rejectionReason?: string,
-): Promise<void> {
-  try {
-    const tenant = await getTenant(approval.tenantId);
-    await updateApprovalRowStatus(tenant, {
-      approvalId:      approval.id,
-      rowNumber:       approval.sheetRowNumber,
-      status:          decision,
-      resolvedBy,
-      rejectionReason,
-    });
-  } catch (err) {
-    logger.warn('approval_sheet_mirror_tenant_lookup_failed', {
-      approvalId: approval.id, tenantId: approval.tenantId,
-      err: String(err).slice(0, 200),
-    });
-  }
-}
 
 async function editMessageToResolved(
   ctx: ActionContext,

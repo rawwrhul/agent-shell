@@ -25,13 +25,6 @@ export interface TenantConfig {
   slackSigningSecret: string
   slackChannelId:     string
 
-  // HITL
-  hitlSpreadsheetId:  string
-  hitlSheetName:      string
-  hitlSheetGid?:      number              // R3
-  googleSaEmail:      string
-  googlePrivateKey:   string
-
   // Agent
   agentType:          AgentType
   agentModel:         string

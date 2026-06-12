@@ -3,11 +3,8 @@
 // Anthropic-format tool definitions for the SEO skill, bound to the actual
 // R2-shipped data-store signatures in src/seo/data-store.ts.
 //
-// R3.1: doProposeAction now dual-writes approvals to BOTH Postgres
-// approval_requests (operational state — what the Slack flow + agent wait
-// loop read) AND the tenant's Google Sheet (persistent audit record).
-// Same approval ID across both stores. Sheet write is best-effort: any
-// failure is logged but doesn't block the approval flow.
+// doProposeAction writes approvals to Postgres approval_requests —
+// the single authoritative store the Slack flow + agent wait loop read.
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { Pool } from 'pg';
@@ -22,8 +19,7 @@ import {
   listActionsSinceLastRun,
 } from '../../seo/data-store';
 import type { ActionType } from '../../seo/types';
-import { createApproval, recordSheetRowNumber } from '../../hitl/state-store';
-import { createApprovalRequest } from '../../hitl/sheets';
+import { createApproval } from '../../hitl/state-store';
 import { getTenant } from '../../tenants/registry';
 import { presenter } from '../../core/slack';
 import { logger } from '../../logger';
@@ -493,35 +489,6 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     previewUrl:     i.previewUrl,
     slackChannelId: effectiveChannelId ?? undefined,
   });
-
-  // 2. Mirror to Sheet (persistent audit record — best-effort, same ID).
-  //    Failures logged but don't block: the approval still works end-to-end
-  //    via Slack + PG; only the Sheet record is missing.
-  if (tenant) {
-    try {
-      const sheetResult = await createApprovalRequest(tenant, {
-        id:         approval.id,
-        taskId:     ctx.taskId,
-        sessionId:  ctx.runId,
-        toolName:   i.toolName,
-        toolInput:  i.toolInput,
-        riskLevel:  approval.riskLevel,
-        riskReason: i.whyPriority ?? `Proposed via SEO skill, priority ${i.priority}.`,
-      });
-      if (sheetResult.rowNumber != null) {
-        await recordSheetRowNumber(pool(), approval.id, sheetResult.rowNumber)
-          .catch(err => logger.warn('approval_sheet_row_record_failed', {
-            approvalId: approval.id, err: String(err),
-          }));
-      }
-    } catch (err) {
-      logger.warn('seo_approval_sheet_write_failed', {
-        tenantId: ctx.tenantId, approvalId: approval.id,
-        err: String(err).slice(0, 200),
-        hint: 'Approval works via Slack + PG; persistent Sheet record missing this row.',
-      });
-    }
-  }
 
   // 3. Post Slack card (best-effort — DB is authoritative; card is informational).
   //    Task 0.5.1: cron-fired runs (daily/weekly/end-of-week) SKIP the

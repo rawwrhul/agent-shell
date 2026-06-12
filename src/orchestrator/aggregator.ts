@@ -644,8 +644,7 @@ Output ONLY valid JSON matching this exact schema. No prose before or after. No 
       "title": "<short title, plain language>",
       "detail": "<1-line context for the operator, no jargon>",
       "pendingSince": "<ISO datetime>",
-      "severity": "<critical|high|medium|low>",
-      "approvalUrl": "<optional Sheets deeplink>"
+      "severity": "<critical|high|medium|low>"
     }
   ]
 }

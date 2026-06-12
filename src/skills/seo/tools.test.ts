@@ -4,11 +4,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../../hitl/state-store', () => ({
   createApproval: vi.fn(),
-  recordSheetRowNumber: vi.fn().mockResolvedValue(undefined),
-}))
-
-vi.mock('../../hitl/sheets', () => ({
-  createApprovalRequest: vi.fn().mockResolvedValue({ rowNumber: null }),
 }))
 
 vi.mock('../../tenants/registry', () => ({
@@ -19,13 +14,9 @@ vi.mock('../../tenants/registry', () => ({
     slackBotToken:        'xoxb-test',
     slackAppToken:        'xapp-test',
     slackSigningSecret:   'secret',
-    hitlSheetId:          'sheet-id',
-    googleSaEmail:        'sa@test.com',
-    googlePrivateKey:     '-----BEGIN RSA PRIVATE KEY-----',
     tokenBudgetPerRun:    100000,
     skills:               ['seo'],
     slackChannelId:       'C_TEST',
-    hitlSheetName:        'Approvals',
     billingTag:           'test',
     isActive:             true,
     agentModel:           'claude-sonnet-4-6',

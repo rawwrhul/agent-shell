@@ -21,7 +21,6 @@ import {
 import { logger } from '../logger';
 
 export * from './state-store';
-export * from './sheets-link';
 export * from './handlers';
 
 export function registerHitlActionHandlers(app: App): void {
@@ -132,11 +131,6 @@ export function registerHitlActionHandlers(app: App): void {
     );
   });
 
-  // approval_open_sheets carries a `url` so Slack handles the redirect.
-  // Just ack to clear the spinner — no DB mutation needed.
-  app.action<BlockAction<ButtonAction>>('approval_open_sheets', async ({ ack }) => {
-    await ack();
-  });
 }
 
 function buildCtx(

@@ -250,18 +250,6 @@ export async function recordSlackMessageTs(
   );
 }
 
-/** R3.1 — store the Sheet row number once the Sheets append returns it. */
-export async function recordSheetRowNumber(
-  pool: Pool, approvalId: string, sheetRowNumber: number,
-): Promise<void> {
-  await pool.query(
-    `UPDATE approval_requests
-     SET sheet_row_number = $2, updated_at = NOW()
-     WHERE id = $1`,
-    [approvalId, sheetRowNumber],
-  );
-}
-
 export interface ResolveApprovalInput {
   approvalId:       string;
   decision:         'approved' | 'rejected' | 'deferred' | 'expired';

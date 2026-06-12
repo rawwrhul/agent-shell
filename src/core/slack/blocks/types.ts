@@ -108,7 +108,6 @@ export interface ApprovalItem {
   title: string;
   detail?: string;
   pendingSince: Date;
-  approvalUrl?: string;       // Sheets deeplink
   severity?: 'critical' | 'high' | 'medium' | 'low';
 }
 

@@ -25,9 +25,7 @@ import { classifyRisk } from './riskClassifier'
 import {
   createApproval,
   waitForApprovalResolution,
-  recordSheetRowNumber,
 } from '../hitl/state-store'
-import { createApprovalRequest } from '../hitl/sheets'
 import { trace } from '../observability/langfuse'
 import { presenter } from '../core/slack'
 import { logger } from '../logger'
@@ -140,33 +138,7 @@ export async function preToolUseHook(
 
   const approvalId = approvalRow.id
 
-  // 2. Mirror to Sheet (persistent audit record — BEST-EFFORT).
-  //    Failure logs a warning but doesn't block. Sheet row number is
-  //    stored on the PG row for fast subsequent updates.
-  try {
-    const sheetResult = await createApprovalRequest(ctx.tenant, {
-      id:         approvalId,
-      taskId:     ctx.taskId,
-      sessionId:  ctx.sessionId,
-      toolName:   event.toolName,
-      toolInput:  event.toolInput,
-      riskLevel:  risk.level,
-      riskReason: risk.reason,
-    })
-    if (sheetResult.rowNumber != null) {
-      await recordSheetRowNumber(pool(), approvalId, sheetResult.rowNumber)
-        .catch(err => logger.warn('approval_sheet_row_record_failed', {
-          approvalId, err: String(err),
-        }))
-    }
-  } catch (err) {
-    logger.warn('approval_sheet_write_failed', {
-      tenantId: ctx.tenant.tenantId, approvalId, err: String(err).slice(0, 200),
-      hint: 'Approval will still work end-to-end via Slack + PG; persistent Sheet record is missing this row.',
-    })
-  }
-
-  // 3. Post the approval card to Slack.
+  // 2. Post the approval card to Slack.
   await presenter.requestApproval({
     tenantId:   ctx.tenant.tenantId,
     channelId:  ctx.channelId,
