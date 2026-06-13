@@ -338,6 +338,7 @@ import { createApproval } from '../../hitl/state-store'
 import { pool } from '../../memory/postgres'
 import { presenter } from '../../core/slack'
 import { getRun } from '../../core/slack/state-store'
+import { scoreAndMaybeRevise } from '../surfer/revision'
 
 export interface ApproveBlogPitchInput {
   slug:        string
@@ -345,6 +346,8 @@ export interface ApproveBlogPitchInput {
   content:     string             // HTML in Framer formattedText format
   imageUrl?:   string
   whyThisTopic?: string
+  /** Target keyword for Surfer scoring (Phase 4 Lever 1). Falls back to title. */
+  targetKeyword?: string
 }
 
 export async function execApproveBlogPitch(
@@ -355,11 +358,29 @@ export async function execApproveBlogPitch(
              error: 'missing required field in toolInput' }
   }
   try {
+    // Phase 4 Lever 1: score the draft and, if below threshold, run one
+    // revision pass BEFORE drafting — so the operator reviews the better
+    // version and sees the score on the card. Best-effort: if Surfer is
+    // unconfigured/unreachable this returns the original content untouched.
+    const revision = await scoreAndMaybeRevise({
+      model:   ctx.tenant.agentModel,
+      keyword: input.targetKeyword ?? input.title,
+      content: input.content,
+    })
+    if (revision.note) {
+      logger.info('surfer_pre_hitl_revision', {
+        slug: input.slug, available: revision.available, scored: revision.scored,
+        scoreBefore: revision.scoreBefore, scoreAfter: revision.scoreAfter,
+        revised: revision.revised, note: revision.note,
+      })
+    }
+    const draftContent = revision.content
+
     // 1. Create the Framer draft (writes CMS item, gets confirmationHash)
     const draft = await fr.draftAndPreviewBlogPost(ctx.tenant, {
       slug:     input.slug,
       title:    input.title,
-      content:  input.content,
+      content:  draftContent,
       imageUrl: input.imageUrl,
     })
 
@@ -423,7 +444,9 @@ export async function execApproveBlogPitch(
           approvalId: stage2.id,
           previewUrl: stage2PreviewUrl,
           tenantName: ctx.tenant.clientName,
-          summary:    `Publish '${input.title}' to /resources/${input.slug}`,
+          summary:    revision.note
+            ? `Publish '${input.title}' to /resources/${input.slug} · ${revision.note}`
+            : `Publish '${input.title}' to /resources/${input.slug}`,
         })
       } catch (err) {
         // Card post failure shouldn't fail the executor — DB row is the source of truth.
