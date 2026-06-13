@@ -62,7 +62,7 @@ export async function runMetricsHistoryMigration(pool: Pool): Promise<void> {
   await pool.query(`
     ALTER TABLE tenant_schedules ADD CONSTRAINT tenant_schedules_run_kind_check
       CHECK (run_kind IN ('daily','weekly','end-of-week','seo_audit',
-                          'backlink_prospect','brand_mention_scan','metrics_sync'))`)
+                          'backlink_prospect','brand_mention_scan','metrics_sync','strategy_refresh'))`)
 
   console.log('  metrics-history: ranking_history + traffic_history ready; run_kind constraint codified')
 }

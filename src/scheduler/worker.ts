@@ -30,6 +30,7 @@ import { getTenant } from '../tenants/registry'
 import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
 import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
+import { runStrategyRefreshCycle } from '../core/strategy/refresh';
 import { enqueueTask } from '../queue/producer';
 import type { TaskTrigger } from '../types';
 
@@ -145,6 +146,23 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
       logger.info('brand_mention_scan_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('brand_mention_scan_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // strategy_refresh authors/refreshes the per-tenant strategy doc. Silent
+  // (no Slack); discovery cycles + the daily run consume it. Freshness-guarded
+  // inside the cycle for effective fortnightly cadence.
+  if (runKind === 'strategy_refresh') {
+    logger.info('strategy_refresh_cycle_starting_from_worker', { tenantId });
+    try {
+      await runStrategyRefreshCycle(tenantId);
+      logger.info('strategy_refresh_cycle_completed_from_worker', { tenantId });
+    } catch (err) {
+      logger.error('strategy_refresh_cycle_failed_from_worker', {
         tenantId, err: String(err).slice(0, 500),
       });
     }

@@ -12,6 +12,7 @@ import { runSheetsRemovalMigration } from './migrations/sheets-removal'
 import { runMetricsHistoryMigration } from './migrations/metrics-history'
 import { runCacheEntriesMigration } from './migrations/cache-entries'
 import { runOpportunityScoringMigration } from './migrations/opportunity-scoring'
+import { runStrategyLayerMigration } from './migrations/strategy-layer'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -312,6 +313,7 @@ async function migrate() {
   await runMetricsHistoryMigration(pool)
   await runCacheEntriesMigration(pool)
   await runOpportunityScoringMigration(pool)
+  await runStrategyLayerMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

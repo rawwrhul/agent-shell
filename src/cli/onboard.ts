@@ -16,6 +16,7 @@ import { registerTenant, setTenantIntegrationConfig } from '../tenants/registry'
 import { AgentType } from '../tenants/types'
 import { upsertSchedule } from '../scheduler'
 import type { RunKind } from '../scheduler/types'
+import { runStrategyRefreshCycle } from '../core/strategy/refresh'
 import { config } from '../config'
 
 const secrets = new SecretManagerServiceClient()
@@ -108,6 +109,7 @@ async function main() {
   const wanted: Array<{ runKind: RunKind; cronExpr: string }> = [
     { runKind: 'daily',     cronExpr: dailyCron },
     { runKind: 'seo_audit', cronExpr: auditCron },
+    { runKind: 'strategy_refresh', cronExpr: '0 6 * * 1' },
   ]
   if (integrations.includes('gsc') || integrations.includes('ga4')) {
     // Before the daily runs so agents see fresh history. Stagger-safe:
@@ -122,6 +124,15 @@ async function main() {
       console.error(`  ❌ ${s.runKind} failed: ${String(err).slice(0, 200)}`)
       console.error('     If this is a CHECK constraint error, the tenant_schedules run_kind constraint needs that kind added.')
     }
+  }
+
+  console.log('\n🧭 Bootstrapping v1 strategy doc (cold start)…')
+  try {
+    const sres = await runStrategyRefreshCycle(tenantId, { force: true, coldStart: true })
+    if (sres.skipped) console.log(`  ⚠️  strategy bootstrap skipped: ${sres.reason}`)
+    else console.log(`  ✅ strategy v${sres.version} written (clusters updated: ${sres.clustersUpdated ?? 0})`)
+  } catch (err) {
+    console.error(`  ⚠️  strategy bootstrap failed (non-fatal): ${String(err).slice(0, 200)}`)
   }
 
   console.log(`

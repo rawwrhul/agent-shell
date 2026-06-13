@@ -26,6 +26,7 @@
     "google:check": "tsx src/cli/googleCheck.ts",
     "metrics:backfill": "tsx src/cli/metricsBackfill.ts",
     "score:backfill": "tsx src/cli/scoreBackfill.ts",
+    "strategy:refresh": "tsx src/cli/strategyRefresh.ts",
     "vendor:check": "tsx src/cli/vendorCheck.ts"
   },
   "dependencies": {
