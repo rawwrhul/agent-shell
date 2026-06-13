@@ -50,6 +50,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
     const ctx = await getMemoryContext({
       tenantId: task.tenantId,
       taskType: 'orchestration',
+      semanticQuery: task.prompt,
       tokenBudget: 1500,
     })
     memoryPrompt = toPromptString(ctx)

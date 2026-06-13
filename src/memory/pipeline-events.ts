@@ -12,6 +12,24 @@
 
 import { logger } from '../logger'
 import { recordMemory, forgetMemory } from './runtime'
+import { storeLearning } from './vector'
+
+// Phase 4 Lever 3: pipeline outcomes are also written to agent_learnings (the
+// Voyage vector store) so getMemoryContext can later surface the ones most
+// *similar* to a new draft — catching "operator rejected this angle before"
+// across different pages, not just the same slug. Stored under one tenant-wide
+// bucket because these outcomes aren't tied to a single specialist; recall is
+// agent-type-agnostic. Best-effort: never throws into the caller, skips
+// cleanly when VOYAGE_API_KEY is unset.
+const PIPELINE_LEARNING_AGENT_TYPE = 'content-pipeline'
+
+async function recordSemantic(tenantId: string, kind: string, content: string): Promise<void> {
+  try {
+    await storeLearning({ tenantId, agentType: PIPELINE_LEARNING_AGENT_TYPE, content, metadata: { kind } })
+  } catch (err) {
+    logger.warn('pipeline_semantic_write_failed', { tenantId, kind, err: String(err).slice(0, 200) })
+  }
+}
 
 const today = (): string => new Date().toISOString().slice(0, 10)
 
@@ -71,6 +89,7 @@ export async function onApprovalResolved(params: {
         value:      `[Approved ${date}] ${toolName}: ${snip(action)}. By ${resolvedBy}.`,
         confidence: 1.0,
       })
+      await recordSemantic(tenantId, 'approval', `Operator approved: ${snip(action, 140)}.`)
       return
     }
 
@@ -95,6 +114,7 @@ export async function onApprovalResolved(params: {
       value:      `[Rejected ${date}] ${toolName}: ${snip(action)}. Reason: ${reasonSnip}. By ${resolvedBy}.`,
       confidence: 1.0,
     })
+    await recordSemantic(tenantId, 'rejection', `Operator rejected: ${snip(action, 140)}. Reason: ${reasonSnip}.`)
   } catch (err) {
     logger.warn('pipeline_hook_approval_resolved_failed', {
       approvalId, tenantId, status,
@@ -161,6 +181,7 @@ export async function onPublishFailed(params: {
       value:      `[Publish failed ${today()}] /resources/${slug}. Error: ${snip(error, 120)}.`,
       confidence: 1.0,
     })
+    await recordSemantic(tenantId, 'publish_failure', `Publish failed for /resources/${slug}. Error: ${snip(error, 120)}.`)
   } catch (err) {
     logger.warn('pipeline_hook_publish_failed_record_failed', {
       tenantId, slug, err: String(err).slice(0, 300),

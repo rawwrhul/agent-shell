@@ -82,19 +82,32 @@ export async function storeLearning(p: { tenantId: string; agentType: string; co
   )
 }
 
-export async function retrieveRelevant(p: { tenantId: string; agentType: string; query: string; topK?: number }) {
+export async function retrieveRelevant(p: { tenantId: string; agentType?: string; query: string; topK?: number }) {
   // Best-effort by design: memory retrieval failing must never fail the
   // run that asked for it. Callers get [] on any error.
+  //
+  // agentType is optional: pass it to scope recall to one specialist's
+  // learnings, or omit it for a tenant-wide recall across every learning
+  // source (used by getMemoryContext, which surfaces pipeline outcomes that
+  // aren't tied to any one specialist).
   try {
     const embedding = await embed(p.query, 'query')
     if (!embedding) return []
     const vec = `[${embedding.join(',')}]`
+    const params: unknown[] = [vec, p.tenantId]
+    let agentFilter = ''
+    if (p.agentType) {
+      params.push(p.agentType)
+      agentFilter = `AND agent_type=$${params.length}`
+    }
+    params.push(p.topK ?? 5)
+    const limitIdx = params.length
     const res = await pool.query(
       `SELECT content, metadata, 1-(embedding<=>$1::vector) as similarity
        FROM agent_learnings
-       WHERE tenant_id=$2 AND agent_type=$3 AND embedding IS NOT NULL
-       ORDER BY embedding<=>$1::vector LIMIT $4`,
-      [vec, p.tenantId, p.agentType, p.topK ?? 5]
+       WHERE tenant_id=$2 ${agentFilter} AND embedding IS NOT NULL
+       ORDER BY embedding<=>$1::vector LIMIT $${limitIdx}`,
+      params
     )
     return res.rows as Array<{ content: string; metadata: Record<string,unknown>; similarity: number }>
   } catch (err) {

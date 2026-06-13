@@ -116,8 +116,25 @@ export interface MemoryContext {
   // (populated by getMemoryContext when it can reach the SEO data store)
   seoSnapshot?: SeoMemorySnapshot;
 
+  /**
+   * Semantic recall (Phase 4 Lever 3): the past outcomes most *similar* to
+   * the current task, pulled from agent_learnings by vector similarity.
+   * Distinct from recentWins/recentLosses, which are recency-ranked.
+   * Populated only when a semanticQuery is supplied. Empty/absent on any
+   * retrieval failure — best-effort, never load-bearing.
+   */
+  semanticRecall?: SemanticRecallEntry[];
+
   /** Approximate token cost of this context if dropped into a prompt. */
   estimatedTokens: number;
+}
+
+/** One vector-similarity hit from agent_learnings. */
+export interface SemanticRecallEntry {
+  content: string;
+  similarity: number;
+  /** 'rejection' | 'approval' | 'publish_failure' | … from the write site's metadata. */
+  kind?: string;
 }
 
 /**

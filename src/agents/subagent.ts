@@ -170,6 +170,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     const ctx = await getMemoryContext({
       tenantId: task.tenantId,
       taskType: subTask.specialist_type,
+      semanticQuery: subTask.task,
       tokenBudget: 1500,
     })
     memoryPrompt = toPromptString(ctx)

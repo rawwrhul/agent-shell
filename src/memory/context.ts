@@ -8,7 +8,8 @@
 
 import type { Pool } from 'pg';
 import { queryMemory } from './store';
-import type { MemoryContext, MemoryEntry, SeoMemorySnapshot } from './types';
+import { retrieveRelevant } from './vector';
+import type { MemoryContext, MemoryEntry, SeoMemorySnapshot, SemanticRecallEntry } from './types';
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -27,6 +28,17 @@ export interface GetMemoryContextOptions {
    * The assembler trims entries to fit. Default 1500.
    */
   tokenBudget?: number;
+  /**
+   * Phase 4 Lever 3 — if supplied, run a vector-similarity recall over
+   * agent_learnings and surface the most *relevant* (not most recent) past
+   * outcomes. Typically the task/draft text (e.g. subTask.task, task.prompt).
+   * Omit to skip semantic recall entirely.
+   */
+  semanticQuery?: string;
+  /** Max semantic-recall hits to surface. Default 3. */
+  semanticTopK?: number;
+  /** Minimum cosine similarity to surface a hit. Default 0.35. */
+  semanticMinSimilarity?: number;
 }
 
 export async function getMemoryContext(
@@ -80,6 +92,29 @@ export async function getMemoryContext(
     estimatedTokens: 0, // filled in below
   };
 
+  // Semantic recall (Lever 3): the past outcomes most *similar* to this task,
+  // not just the most recent. Best-effort — retrieveRelevant swallows its own
+  // errors and returns []. Deduped against the recency slices so an outcome
+  // isn't shown twice.
+  if (opts.semanticQuery) {
+    const minSim = opts.semanticMinSimilarity ?? 0.35;
+    const hits = await retrieveRelevant({
+      tenantId,
+      query: opts.semanticQuery,
+      topK: opts.semanticTopK ?? 3,
+    });
+    const recencyText = [...wins, ...losses].map((e) => e.value);
+    const recall: SemanticRecallEntry[] = hits
+      .filter((h) => h.similarity >= minSim)
+      .filter((h) => !recencyText.some((v) => overlaps(v, h.content)))
+      .map((h) => ({
+        content: h.content,
+        similarity: h.similarity,
+        kind: typeof h.metadata?.kind === 'string' ? (h.metadata.kind as string) : undefined,
+      }));
+    if (recall.length > 0) ctx.semanticRecall = recall;
+  }
+
   ctx.estimatedTokens = estimateTokens(ctx);
 
   // If over budget, trim least-confident entries until we fit.
@@ -121,6 +156,9 @@ export function toPromptString(ctx: MemoryContext): string {
   if (ctx.learnings.length > 0) {
     sections.push(formatSection('learnings', ctx.learnings));
   }
+  if (ctx.semanticRecall && ctx.semanticRecall.length > 0) {
+    sections.push(formatSemanticRecall(ctx.semanticRecall));
+  }
   if (ctx.seoSnapshot) {
     sections.push(formatSeoSnapshot(ctx.seoSnapshot));
   }
@@ -133,6 +171,32 @@ export function toPromptString(ctx: MemoryContext): string {
 }
 
 // ── Internals ───────────────────────────────────────────────────────
+
+/**
+ * Render the semantic-recall slice. Each line leads with the outcome kind
+ * (so the model knows whether it's an "avoid this" or "this worked" signal)
+ * and the similarity, so a marginally-relevant hit reads as lower-weight.
+ */
+function formatSemanticRecall(entries: SemanticRecallEntry[]): string {
+  const lines = entries.map((e) => {
+    const tag = e.kind ? `[${e.kind}] ` : '';
+    const sim = `(relevance ${e.similarity.toFixed(2)})`;
+    return `    - ${tag}${e.content} ${sim}`;
+  });
+  return `  <relevant_recall>\n${lines.join('\n')}\n  </relevant_recall>`;
+}
+
+/**
+ * Cheap textual dedup: treat two entries as the same outcome if either
+ * contains the other (covers the common case where a recent loss and its
+ * semantic-recall twin share the same proposed-action text).
+ */
+function overlaps(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (!x || !y) return false;
+  return x.includes(y) || y.includes(x);
+}
 
 function formatSection(tag: string, entries: MemoryEntry[]): string {
   const lines = entries.map((e) => {
@@ -200,8 +264,9 @@ function estimateTokens(ctx: MemoryContext): number {
     ...ctx.facts,
   ];
   const memoryChars = all.reduce((acc, e) => acc + e.value.length + 30, 0);
+  const recallChars = (ctx.semanticRecall ?? []).reduce((acc, e) => acc + e.content.length + 30, 0);
   const seoChars = ctx.seoSnapshot ? estimateSeoSnapshotChars(ctx.seoSnapshot) : 0;
-  return Math.ceil((memoryChars + seoChars) / 4);
+  return Math.ceil((memoryChars + recallChars + seoChars) / 4);
 }
 
 function estimateSeoSnapshotChars(s: SeoMemorySnapshot): number {
@@ -220,6 +285,19 @@ function estimateSeoSnapshotChars(s: SeoMemorySnapshot): number {
  * losses, then wins, in that order.
  */
 function trimToFit(ctx: MemoryContext, tokenBudget: number): void {
+  // Semantic recall is the most expendable — it's a "nice to have relevance"
+  // signal, not load-bearing. Drop its lowest-similarity entries first.
+  while (ctx.estimatedTokens > tokenBudget && ctx.semanticRecall && ctx.semanticRecall.length > 0) {
+    let lowestIdx = 0;
+    for (let i = 1; i < ctx.semanticRecall.length; i++) {
+      if (ctx.semanticRecall[i].similarity < ctx.semanticRecall[lowestIdx].similarity) lowestIdx = i;
+    }
+    ctx.semanticRecall.splice(lowestIdx, 1);
+    if (ctx.semanticRecall.length === 0) ctx.semanticRecall = undefined;
+    ctx.estimatedTokens = estimateTokens(ctx);
+  }
+  if (ctx.estimatedTokens <= tokenBudget) return;
+
   const trimOrder: Array<keyof Pick<MemoryContext, 'learnings' | 'recentLosses' | 'recentWins' | 'facts'>> = [
     'learnings',
     'recentLosses',
