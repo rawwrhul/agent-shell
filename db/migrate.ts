@@ -11,6 +11,7 @@ import { runVoyageEmbeddingsMigration } from './migrations/voyage-embeddings'
 import { runSheetsRemovalMigration } from './migrations/sheets-removal'
 import { runMetricsHistoryMigration } from './migrations/metrics-history'
 import { runCacheEntriesMigration } from './migrations/cache-entries'
+import { runOpportunityScoringMigration } from './migrations/opportunity-scoring'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -310,6 +311,7 @@ async function migrate() {
   await runSheetsRemovalMigration(pool)
   await runMetricsHistoryMigration(pool)
   await runCacheEntriesMigration(pool)
+  await runOpportunityScoringMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

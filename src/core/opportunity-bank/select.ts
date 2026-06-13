@@ -20,10 +20,11 @@ import { pool } from '../../memory/postgres'
 import { logger } from '../../logger'
 import {
   Opportunity, Priority, OppStatus,
-  PRIORITY_WEIGHTS, FRESHNESS_WINDOW_DAYS, DIVERSITY_CAP_PER_TYPE,
-  TYPE_BOOSTS, TYPE_DIVERSITY_CAPS,
+  FRESHNESS_WINDOW_DAYS, DIVERSITY_CAP_PER_TYPE,
+  TYPE_DIVERSITY_CAPS,
   DEFAULT_SURFACE_LIMIT, ACTIONABLE_STATUSES,
 } from './types'
+import { defaultScoreForPriority } from './scoring'
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -116,6 +117,7 @@ async function loadCandidates(input: CandidateLoadInput): Promise<Opportunity[]>
       id, tenant_id AS "tenantId", run_id AS "runId", type, target,
       description, rationale, priority, status,
       estimated_impact AS "estimatedImpact",
+      score,
       created_at AS "createdAt", updated_at AS "updatedAt",
       surfaced_in_run_id AS "surfacedInRunId",
       surfaced_at AS "surfacedAt",
@@ -139,8 +141,13 @@ async function loadCandidates(input: CandidateLoadInput): Promise<Opportunity[]>
 /**
  * Score each candidate and select top N with a per-type cap.
  *
- * Scoring: `priorityWeight(P0=10/P1=6/P2=3) × ageBoost`
- *   ageBoost: linear from 1.0 (just created) to 0.5 (at the window edge).
+ * Ranking: `storedScore × ageBoost`.
+ *   storedScore: the EV score persisted by the discovery cycle (Phase 2,
+ *     scoring.ts: expected_monthly_change / weeks_to_impact). Legacy or
+ *     not-yet-scored rows fall back to a priority-derived default so the
+ *     transition to score-ordering stays sane (decision 2).
+ *   ageBoost: linear 1.0 (just created) → 0.5 (at the window edge), a mild
+ *     freshness decay so stale opportunities cycle out.
  *
  * Diversity: iterate in descending score; skip any whose type has already
  * been picked `cap` times. Picks tie-break older-first for predictable
@@ -158,8 +165,10 @@ export function scoreAndPick(
     const ageMs = now - c.createdAt.getTime()
     // 1.0 at age=0, 0.5 at age=windowMs, clamped.
     const ageBoost = Math.max(0.5, 1 - (0.5 * ageMs / windowMs))
-    const typeBoost = TYPE_BOOSTS[c.type] ?? 1.0
-    const score = (PRIORITY_WEIGHTS[c.priority] ?? 1) * ageBoost * typeBoost
+    const base = (typeof c.score === 'number' && Number.isFinite(c.score))
+      ? c.score
+      : defaultScoreForPriority(c.priority)
+    const score = base * ageBoost
     return { opp: c, score }
   })
 

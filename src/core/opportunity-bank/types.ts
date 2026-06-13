@@ -32,6 +32,7 @@ export interface Opportunity {
   priority:           Priority
   status:             OppStatus
   estimatedImpact:    string | null
+  score:              number | null
   createdAt:          Date
   updatedAt:          Date
   surfacedInRunId:    string | null
@@ -67,6 +68,10 @@ export const RESHAPE_MAX_DEPTH = 3
 export const DEFAULT_SURFACE_LIMIT = 5
 
 /**
+ * @deprecated Phase 2: no longer applied. Ranking is by computed EV score
+ * (see scoring.ts). The article-creation preference now lives in the strategy
+ * cluster-fit weight, not a blunt multiplier. Kept exported for back-compat.
+ *
  * Per-type score multipliers applied on top of PRIORITY_WEIGHTS in
  * scoreAndPick. Unlisted types default to 1.0 (no boost).
  *

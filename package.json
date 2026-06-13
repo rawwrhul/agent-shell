@@ -25,6 +25,7 @@
     "smoke:auditor": "tsx scripts/smoke-auditor-checks.ts",
     "google:check": "tsx src/cli/googleCheck.ts",
     "metrics:backfill": "tsx src/cli/metricsBackfill.ts",
+    "score:backfill": "tsx src/cli/scoreBackfill.ts",
     "vendor:check": "tsx src/cli/vendorCheck.ts"
   },
   "dependencies": {
