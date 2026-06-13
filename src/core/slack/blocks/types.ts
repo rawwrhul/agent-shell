@@ -74,6 +74,10 @@ export interface DailyRunReport {
   /** R3: 3-5 bullets summarising overnight + queued + awaiting. */
   tldr: string[];
 
+  /** Deterministic performance pulse (computed in SQL, never by the LLM).
+   *  Stamped by the presenter at completeRun; absent until history exists. */
+  performancePulse?: string;
+
   shippedActions: ShippedAction[];
   newOpportunities: Opportunity[];
   queuedForToday: QueuedAction[];

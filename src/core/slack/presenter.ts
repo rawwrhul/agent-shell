@@ -28,6 +28,7 @@ import {
   ExecutionResultInput,
   PendingNudgeInput,
 } from './types';
+import { buildPerformancePulse } from '../metrics/pulse';
 import {
   renderAnchor, renderSpecialistComplete, renderSpecialistFailed,
   renderApprovalRequest, renderApprovalResolved,
@@ -249,6 +250,17 @@ export class SlackPresenter {
   // ──────────────────────────────────────────────────────────────────────
 
   async completeRun(taskId: string, report: FinalReport | string): Promise<void> {
+    // Stamp the deterministic performance pulse onto daily reports. SQL
+    // numbers on client-facing sends — never LLM-produced. Best-effort:
+    // no history (new tenant, gsc disabled) → no pulse line.
+    if (typeof report !== 'string' && report.kind === 'daily' && !report.performancePulse) {
+      const run = await getRun(this.pool, taskId);
+      if (run) {
+        const pulse = await buildPerformancePulse(this.pool, run.tenantId).catch(() => null);
+        if (pulse) report.performancePulse = pulse;
+      }
+    }
+
     await this.mutate(taskId, state => {
       const finalReport: RunState['finalReport'] =
         typeof report === 'string'

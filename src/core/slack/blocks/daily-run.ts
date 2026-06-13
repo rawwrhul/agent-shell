@@ -56,6 +56,7 @@ export function renderDailyRun(report: DailyRunReport): RenderedMessage {
   const blocks = compact<KnownBlock>([
     header(headline),
     context([triggerNote, formatDate(report.runDate)]),
+    report.performancePulse && context([`📊 ${report.performancePulse}`]),
     section(summary),
 
     // ── TL;DR (R3 NEW) ────────────────────────────────────────────
