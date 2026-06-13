@@ -93,15 +93,12 @@ export async function runSeo2AuditorMigration(pool: Pool): Promise<void> {
     // Constraint ownership moved to db/migrations/metrics-history.ts
     // (2026-06-13). This migration used to recreate the CHECK with its
     // era's run_kind list, which broke re-runs once later kinds
-    // (backlink_prospect, brand_mention_scan, metrics_sync) had rows in
-    // the table — idempotent migrations must never narrow constraints
-    // over data added after them. The canonical list now lives in ONE
-    // place: runMetricsHistoryMigration, which runs last in the chain.
-    await client.query(`
-      ALTER TABLE tenant_schedules
-        ADD CONSTRAINT tenant_schedules_run_kind_check
-        CHECK (run_kind IN ('daily','weekly','end-of-week','seo_audit',
-                            'backlink_prospect','brand_mention_scan','metrics_sync'))`)
+    // (backlink_prospect, brand_mention_scan, metrics_sync, strategy_refresh,
+    // and the Phase 2 content kinds) had rows in the table — idempotent
+    // migrations must never narrow constraints over data added after them.
+    // We DROP any stale CHECK above and stop here; runMetricsHistoryMigration
+    // (which runs after this one) recreates it as the single canonical owner
+    // with the complete run_kind list.
 
     await client.query('COMMIT')
   } catch (err) {
