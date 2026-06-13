@@ -31,6 +31,9 @@ import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
 import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
 import { runStrategyRefreshCycle } from '../core/strategy/refresh';
+import { runMetadataEditCycle } from '../skills/seo-discovery';
+import { runCopyOptimiseCycle, runInternalLinkCycle } from '../skills/seo-discovery';
+import { runArticleCreateCycle } from '../skills/seo-discovery';
 import { enqueueTask } from '../queue/producer';
 import type { TaskTrigger } from '../types';
 
@@ -163,6 +166,78 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
       logger.info('strategy_refresh_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('strategy_refresh_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // metadata_edit discovery cycle (Phase 2, unit 3). Silent: scores and files
+  // CTR-gap opportunities into the bank for the daily run to surface. No Slack.
+  if (runKind === 'metadata_edit') {
+    logger.info('metadata_edit_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await runMetadataEditCycle(tenantId);
+      logger.info('metadata_edit_cycle_completed_from_worker', {
+        tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
+      });
+    } catch (err) {
+      logger.error('metadata_edit_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // copy_optimise discovery cycle (Phase 2, unit 3). Silent: files scored
+  // striking-distance content opportunities into the bank. No Slack.
+  if (runKind === 'copy_optimise') {
+    logger.info('copy_optimise_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await runCopyOptimiseCycle(tenantId);
+      logger.info('copy_optimise_cycle_completed_from_worker', {
+        tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
+      });
+    } catch (err) {
+      logger.error('copy_optimise_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // internal_link discovery cycle (Phase 2, unit 3). Silent: files scored
+  // under-linked-page opportunities into the bank. Crawl-gated. No Slack.
+  if (runKind === 'internal_link') {
+    logger.info('internal_link_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await runInternalLinkCycle(tenantId);
+      logger.info('internal_link_cycle_completed_from_worker', {
+        tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
+      });
+    } catch (err) {
+      logger.error('internal_link_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // article_create discovery cycle (Phase 2, unit 3). Silent: files scored
+  // new-content opportunities for underserved strategy clusters. No Slack.
+  if (runKind === 'article_create') {
+    logger.info('article_create_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await runArticleCreateCycle(tenantId);
+      logger.info('article_create_cycle_completed_from_worker', {
+        tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
+      });
+    } catch (err) {
+      logger.error('article_create_cycle_failed_from_worker', {
         tenantId, err: String(err).slice(0, 500),
       });
     }

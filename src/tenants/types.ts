@@ -48,6 +48,12 @@ export interface TenantConfig {
    *  honour this — they don't even file opportunities of disabled types. */
   disabledOpportunityTypes?: string[]
 
+  /** CMS/blog path prefixes for this tenant (e.g. ['/blog/']). Used to
+   *  classify a target URL as a CMS item (automatable) vs a marketing page
+   *  (operator-executed) when deriving an opportunity's execution_mode. The
+   *  site root is always treated as non-CMS regardless of this value. */
+  cmsPathPrefixes?: string[]
+
   /** Operator-authored 2-4 sentence description of what this tenant
    *  does, who they serve, how they're positioned. Injected into every
    *  LLM call (drafter, aggregator, subagent) as authoritative ground
@@ -91,6 +97,7 @@ export interface TenantRow {
   target_domain:                string | null   // R3
   competitor_domains:           string[] | null // R3
   disabled_opportunity_types:   string[] | null // SEO-5
+  cms_path_prefixes:            string[] | null // Phase 2 unit 3
   business_brief:               string | null   // Business-brief bundle
   operator_slack_user_id:       string | null   // Business-brief bundle
   cron_timezone:                string | null   // R3

@@ -49,6 +49,7 @@ export async function registerTenant(params: {
   cronTimezone?:        string
   businessBrief?:       string
   operatorSlackUserId?: string
+  cmsPathPrefixes?:     string[]
 }): Promise<void> {
   await pool.query(
     `INSERT INTO tenants (
@@ -56,9 +57,9 @@ export async function registerTenant(params: {
       skills, slack_channel_id, billing_tag, is_active,
       secret_slack_bot_token, secret_slack_app_token, secret_slack_signing_secret,
       target_domain, competitor_domains, cron_timezone,
-      business_brief, operator_slack_user_id,
+      business_brief, operator_slack_user_id, cms_path_prefixes,
       created_at, updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())`,
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())`,
     [
       params.tenantId,
       params.clientName,
@@ -76,6 +77,7 @@ export async function registerTenant(params: {
       params.cronTimezone ?? 'Australia/Sydney',
       params.businessBrief ?? null,
       params.operatorSlackUserId ?? null,
+      params.cmsPathPrefixes ?? null,
     ]
   )
   logger.info('tenant_registered', { tenantId: params.tenantId, client: params.clientName })
@@ -159,6 +161,7 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     targetDomain:              row.target_domain ?? undefined,
     competitorDomains:         row.competitor_domains ?? undefined,
     disabledOpportunityTypes:  row.disabled_opportunity_types ?? undefined,
+    cmsPathPrefixes:           row.cms_path_prefixes ?? undefined,
     cronTimezone:              row.cron_timezone ?? undefined,
     businessBrief:             row.business_brief ?? undefined,
     operatorSlackUserId:       row.operator_slack_user_id ?? undefined,

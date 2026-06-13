@@ -49,6 +49,8 @@ async function main() {
   const cronTimezone      = await ask('Timezone (default: Australia/Sydney): ', 'Australia/Sydney')
   const businessBrief     = await ask('One-paragraph business brief (blank to add later): ')
   const operatorSlackId   = await ask('Operator Slack user ID (U..., blank to skip): ')
+  const cmsPrefixRaw      = await ask('CMS/blog path prefixes (comma-separated, e.g. /blog/, blank to skip): ')
+  const cmsPathPrefixes   = cmsPrefixRaw.split(',').map(s => s.trim()).filter(Boolean)
 
   console.log('\n── Slack ──────────────────────────────────────────────────────────\nCreate a Slack app in the client workspace first (see deployment guide).\n')
   const slackBotToken      = await ask('Slack Bot Token (xoxb-...): ')
@@ -93,6 +95,7 @@ async function main() {
     cronTimezone,
     businessBrief:       businessBrief || undefined,
     operatorSlackUserId: operatorSlackId || undefined,
+    cmsPathPrefixes:     cmsPathPrefixes.length ? cmsPathPrefixes : undefined,
   })
 
   if (integrations.length) {

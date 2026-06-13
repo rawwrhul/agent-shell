@@ -73,6 +73,12 @@ export async function runStrategyRefreshCycle(
   const clusters = (await safe(() => listClusters(pool, tenantId))) ?? []
   const memories = (await safe(() => queryMemory({ tenantId, limit: 25 }))) ?? []
 
+  // Demonstrated demand: the queries the site already ranks for (in-DB GSC,
+  // query grain). The summary/movers tools above are aggregate; without this
+  // the strategist authors the portfolio blind to what the site actually holds
+  // and misses commercial head terms already ranking. Brand terms filtered out.
+  const rankingSurface = (await safe(() => gatherRankingSurface(tenantId, brandTokens(tenant)))) ?? ''
+
   // GATHER VENDOR HOOK (2b): live Ahrefs organic_competitors / backlink_gap,
   // DataForSEO SERP, Surfer content guidelines per priority cluster — all via
   // cachedJson under the per-sweep unit budget. Wired + gather-tested in 2b.
@@ -89,6 +95,7 @@ export async function runStrategyRefreshCycle(
     perf, movers,
     clusterLines: clusters.map((c) => `- ${c.pillarTopic} (${c.state})`).join('\n'),
     memoryLines:  memories.map((m) => `- [${m.type}/${m.key}] ${m.value}`).join('\n'),
+    rankingSurfaceLines: rankingSurface,
     vendorContext, coldStart,
   })
 
@@ -139,6 +146,7 @@ function buildStrategyPrompt(p: {
   movers:       string | null
   clusterLines: string
   memoryLines:  string
+  rankingSurfaceLines: string
   vendorContext: string
   coldStart:    boolean
 }): string {
@@ -158,6 +166,8 @@ function buildStrategyPrompt(p: {
     ``,
     `Top movers:\n${p.movers ?? '(no history yet)'}`,
     ``,
+    `Queries the site ALREADY ranks for (GSC, last 28d, brand terms excluded). GROUND THE PORTFOLIO IN THESE: form or defend clusters around demonstrated demand, especially commercial-intent head terms the site already holds or sits close on. Do not omit a category the site clearly ranks for:\n${p.rankingSurfaceLines || '(no ranking data yet)'}`,
+    ``,
     `Existing clusters:\n${p.clusterLines || '(none defined yet)'}`,
     ``,
     `What we have learned (memory — honour constraints, do not re-chase losses):\n${p.memoryLines || '(none yet)'}`,
@@ -176,6 +186,46 @@ function buildStrategyPrompt(p: {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/** Brand tokens to strip from the ranking surface (client name + domain SLD). */
+function brandTokens(tenant: { clientName: string; targetDomain?: string | null }): string[] {
+  const toks = new Set<string>()
+  for (const t of tenant.clientName.toLowerCase().split(/\s+/)) if (t.length >= 3) toks.add(t)
+  if (tenant.targetDomain) {
+    const host = tenant.targetDomain.replace(/^https?:\/\//, '').replace(/^sc-domain:/, '').split('/')[0]
+    const sld = host.split('.')[0]
+    if (sld && sld.length >= 3) toks.add(sld.toLowerCase())
+  }
+  return [...toks]
+}
+
+/** Top non-brand queries the site ranks for, formatted for the strategist. */
+async function gatherRankingSurface(tenantId: string, brand: string[]): Promise<string> {
+  const res = await pool.query(
+    `SELECT keyword,
+            SUM(impressions)::int impr,
+            SUM(clicks)::int clicks,
+            SUM(position*impressions)/NULLIF(SUM(impressions),0) pos
+     FROM ranking_history
+     WHERE tenant_id=$1 AND date >= CURRENT_DATE - 28
+     GROUP BY keyword
+     HAVING SUM(impressions) >= 2
+     ORDER BY impr DESC
+     LIMIT 60`,
+    [tenantId],
+  )
+  const rows = res.rows
+    .map((r) => ({ keyword: String(r.keyword), impr: Number(r.impr), clicks: Number(r.clicks), pos: Number(r.pos) }))
+    .filter((r) => {
+      const k = r.keyword.toLowerCase()
+      return !brand.some((b) => k.includes(b))
+    })
+    .slice(0, 40)
+  if (!rows.length) return ''
+  return rows
+    .map((r) => `- "${r.keyword}" — #${r.pos.toFixed(1)}, ${r.impr} impr, ${r.clicks} clicks`)
+    .join('\n')
+}
 
 async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   try { return await fn() } catch { return null }

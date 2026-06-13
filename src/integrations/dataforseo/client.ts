@@ -22,18 +22,32 @@
 // Add more endpoints as concrete needs arise. The agent will surface
 // "need data not in current tools" if so.
 
+import { getSharedCredential } from '../../credentials/resolver'
 import { loadCredential } from '../storage'
 import type { TenantConfig } from '../../tenants/types'
 
 const BASE = 'https://api.dataforseo.com'
 
 async function getAuth(tenant: TenantConfig): Promise<string> {
-  const cred = await loadCredential(tenant.tenantId, 'dataforseo')
-  if (!cred) {
-    throw new Error(`Tenant ${tenant.tenantId}: no DataForSEO credentials stored. Run set-credential script.`)
+  // DataForSEO may be stored per-tenant (integration_credentials, secret as
+  // "login:password") OR as shared CGS secrets (cgs-dataforseo_login /
+  // _password). Try per-tenant first (where existing tenants set it), then
+  // fall back to shared. Resolved per the source that actually holds it.
+  const perTenant = await loadCredential(tenant.tenantId, 'dataforseo').catch(() => null)
+  if (perTenant?.secret) {
+    return 'Basic ' + Buffer.from(perTenant.secret).toString('base64')
   }
-  // secret is expected as "<login>:<password>"
-  return 'Basic ' + Buffer.from(cred.secret).toString('base64')
+  const [login, password] = await Promise.all([
+    getSharedCredential('dataforseo_login').catch(() => null),
+    getSharedCredential('dataforseo_password').catch(() => null),
+  ])
+  if (login && password) {
+    return 'Basic ' + Buffer.from(`${login}:${password}`).toString('base64')
+  }
+  throw new Error(
+    `DataForSEO credentials not found for ${tenant.tenantId} ` +
+    `(checked per-tenant integration_credentials and shared cgs-dataforseo_login/_password).`,
+  )
 }
 
 async function call<T>(tenant: TenantConfig, endpoint: string, body: unknown): Promise<T> {
@@ -47,7 +61,20 @@ async function call<T>(tenant: TenantConfig, endpoint: string, body: unknown): P
     const text = await res.text().catch(() => '')
     throw new Error(`DataForSEO ${endpoint} ${res.status}: ${text.slice(0, 200)}`)
   }
-  return await res.json() as T
+  const json = await res.json() as T & {
+    status_code?: number; status_message?: string; tasks_error?: number
+    tasks?: Array<{ status_code?: number; status_message?: string }>
+  }
+  // DataForSEO returns HTTP 200 even on task-level failures (auth, bad params,
+  // out-of-credit). 20000 == success; anything else must surface, not silently
+  // collapse to an empty result set.
+  const taskCode = json?.tasks?.[0]?.status_code
+  if ((typeof json?.status_code === 'number' && json.status_code !== 20000) ||
+      (typeof taskCode === 'number' && taskCode !== 20000)) {
+    const msg = json?.tasks?.[0]?.status_message ?? json?.status_message ?? 'unknown error'
+    throw new Error(`DataForSEO ${endpoint} status ${taskCode ?? json?.status_code}: ${String(msg).slice(0, 200)}`)
+  }
+  return json as T
 }
 
 // ── Operations ──────────────────────────────────────────────────────────────
@@ -162,11 +189,14 @@ export async function backlinksSummary(
 
 export interface KeywordOverviewItem {
   keyword:        string
-  search_volume:  number | null
-  cpc:            number | null
-  competition:    number | null
-  competition_level: string | null
-  keyword_difficulty: number | null
+  // DataForSEO Labs nests metrics under keyword_info / keyword_properties.
+  keyword_info: {
+    search_volume:     number | null
+    cpc:               number | null
+    competition:       number | null
+    competition_level: string | null
+  } | null
+  keyword_properties: { keyword_difficulty?: number | null } | null
   search_intent_info: { main_intent?: string } | null
 }
 

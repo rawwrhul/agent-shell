@@ -27,6 +27,10 @@
     "metrics:backfill": "tsx src/cli/metricsBackfill.ts",
     "score:backfill": "tsx src/cli/scoreBackfill.ts",
     "strategy:refresh": "tsx src/cli/strategyRefresh.ts",
+    "discover:metadata": "tsx src/cli/discoverMetadata.ts",
+    "discover:copy": "tsx src/cli/discoverCopy.ts",
+    "discover:links": "tsx src/cli/discoverLinks.ts",
+    "discover:articles": "tsx src/cli/discoverArticles.ts",
     "vendor:check": "tsx src/cli/vendorCheck.ts"
   },
   "dependencies": {
