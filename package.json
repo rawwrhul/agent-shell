@@ -24,7 +24,8 @@
     "audit": "tsx src/cli/audit.ts",
     "smoke:auditor": "tsx scripts/smoke-auditor-checks.ts",
     "google:check": "tsx src/cli/googleCheck.ts",
-    "metrics:backfill": "tsx src/cli/metricsBackfill.ts"
+    "metrics:backfill": "tsx src/cli/metricsBackfill.ts",
+    "vendor:check": "tsx src/cli/vendorCheck.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",

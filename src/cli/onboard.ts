@@ -21,7 +21,7 @@ import { config } from '../config'
 const secrets = new SecretManagerServiceClient()
 const io = rl.createInterface({ input, output })
 
-const ALLOWED_INTEGRATIONS = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels']
+const ALLOWED_INTEGRATIONS = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer']
 
 async function ask(q: string, fallback?: string): Promise<string> {
   const answer = (await io.question(q)).trim()

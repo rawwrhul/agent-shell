@@ -20,6 +20,8 @@ import { GSC_TOOLS, isGscToolName, executeGscTool }         from './gsc/tools'
 import { GA4_TOOLS, isGa4ToolName, executeGa4Tool }         from './ga4/tools'
 import { DATAFORSEO_TOOLS, isDataForSeoToolName, executeDataForSeoTool } from './dataforseo/tools'
 import { PEXELS_TOOLS, isPexelsToolName, executePexelsTool } from './pexels/tools'
+import { AHREFS_TOOLS, isAhrefsToolName, executeAhrefsTool } from './ahrefs/tools'
+import { SURFER_TOOLS, isSurferToolName, executeSurferTool } from './surfer/tools'
 
 import type { IntegrationKind } from './types'
 
@@ -30,7 +32,7 @@ export * from './types'
 function tenantIntegrations(tenant: TenantConfig): IntegrationKind[] {
   const raw = tenant.integrations
   if (!Array.isArray(raw)) return []
-  const allowed: IntegrationKind[] = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels']
+  const allowed: IntegrationKind[] = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer']
   return raw.filter((x): x is IntegrationKind => allowed.includes(x as IntegrationKind))
 }
 
@@ -42,13 +44,15 @@ export function buildIntegrationToolsForTenant(tenant: TenantConfig): Anthropic.
   if (enabled.includes('ga4'))         tools.push(...GA4_TOOLS)
   if (enabled.includes('dataforseo'))  tools.push(...DATAFORSEO_TOOLS)
   if (enabled.includes('pexels'))      tools.push(...PEXELS_TOOLS)
+  if (enabled.includes('ahrefs'))      tools.push(...AHREFS_TOOLS)
+  if (enabled.includes('surfer'))      tools.push(...SURFER_TOOLS)
   return tools
 }
 
 // ── Tool dispatch ───────────────────────────────────────────────────────────
 
 export function isIntegrationToolName(name: string): boolean {
-  return isFramerToolName(name) || isGscToolName(name) || isGa4ToolName(name) || isDataForSeoToolName(name) || isPexelsToolName(name)
+  return isFramerToolName(name) || isGscToolName(name) || isGa4ToolName(name) || isDataForSeoToolName(name) || isPexelsToolName(name) || isAhrefsToolName(name) || isSurferToolName(name)
 }
 
 export async function executeIntegrationTool(
@@ -61,5 +65,7 @@ export async function executeIntegrationTool(
   if (isGa4ToolName(name))         return executeGa4Tool(name, input, tenant)
   if (isDataForSeoToolName(name))  return executeDataForSeoTool(name, input, tenant)
   if (isPexelsToolName(name))      return executePexelsTool(name, input, tenant)
+  if (isAhrefsToolName(name))      return executeAhrefsTool(name, input, tenant)
+  if (isSurferToolName(name))      return executeSurferTool(name, input, tenant)
   return `Unknown integration tool: ${name}`
 }

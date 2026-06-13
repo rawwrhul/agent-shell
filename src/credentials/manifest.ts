@@ -11,6 +11,7 @@ export interface CredentialDef {
 
 export const CGS_CREDENTIALS: CredentialDef[] = [
   { key: 'ahrefs_api_key',    label: 'Ahrefs API Key',    owner: 'cgs', required: false, description: 'Backlink analysis, domain authority, keyword research', howToGet: 'Ahrefs → Account → API → Generate key' },
+  { key: 'surfer_api_key',    label: 'Surfer API Key',    owner: 'cgs', required: false, description: 'Content guidelines and scoring from SERP analysis', howToGet: 'Surfer → requires Custom Plan or API Add-on — contact Surfer support' },
   { key: 'semrush_api_key',   label: 'SEMrush API Key',   owner: 'cgs', required: false, description: 'Keyword research, competitor analysis, site audits',   howToGet: 'SEMrush → Profile → API → Get API key' },
   { key: 'brave_api_key',     label: 'Brave Search API Key', owner: 'cgs', required: false, description: 'Web search for all agents', howToGet: 'brave.com/search/api → Subscribe → Copy API key' },
   { key: 'dataforseo_login',  label: 'DataForSEO Login',  owner: 'cgs', required: false, description: 'SERP data, keyword difficulty, search volume', howToGet: 'DataForSEO dashboard → API access' },
