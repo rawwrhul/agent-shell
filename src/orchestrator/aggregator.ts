@@ -33,6 +33,7 @@ import { config }     from '../config'
 import { AgentTask, TaskTrigger }  from '../types'
 import { TenantConfig } from '../tenants/types'
 import { getSubtasks } from '../memory/subtasks'
+import { validateReportEnvelope } from './report-envelope'
 import { presenter }   from '../core/slack'
 import { startTrace, endTrace } from '../observability/langfuse'
 import { logger } from '../logger'
@@ -334,8 +335,9 @@ export function parseAggregatorOutput(
   // Fill in identity fields the model can't know.
   const enriched = enrichWithIdentity(report, task, tenant)
 
-  if (!validateMinimal(enriched)) {
-    return { ok: false, reason: 'minimal_shape_validation_failed' }
+  const envelope = validateReportEnvelope(enriched)
+  if (!envelope.ok) {
+    return { ok: false, reason: envelope.reason }
   }
 
   return { ok: true, report: enriched }
