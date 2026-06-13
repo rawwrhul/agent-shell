@@ -109,6 +109,11 @@ async function main() {
     { runKind: 'daily',     cronExpr: dailyCron },
     { runKind: 'seo_audit', cronExpr: auditCron },
   ]
+  if (integrations.includes('gsc') || integrations.includes('ga4')) {
+    // Before the daily runs so agents see fresh history. Stagger-safe:
+    // pure data job, no LLM contention.
+    wanted.push({ runKind: 'metrics_sync', cronExpr: '30 5 * * *' })
+  }
   for (const s of wanted) {
     try {
       await upsertSchedule({ tenantId, runKind: s.runKind, cronExpr: s.cronExpr, timezone: cronTimezone })

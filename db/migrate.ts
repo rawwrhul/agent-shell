@@ -9,6 +9,7 @@ import { runSeo5BacklinksMigration }   from './migrations/seo-5-backlinks'
 import { runBusinessBriefAndCardsMigration } from './migrations/business-brief-and-cards'
 import { runVoyageEmbeddingsMigration } from './migrations/voyage-embeddings'
 import { runSheetsRemovalMigration } from './migrations/sheets-removal'
+import { runMetricsHistoryMigration } from './migrations/metrics-history'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -306,6 +307,7 @@ async function migrate() {
   await runBusinessBriefAndCardsMigration(pool)
   await runVoyageEmbeddingsMigration(pool)
   await runSheetsRemovalMigration(pool)
+  await runMetricsHistoryMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

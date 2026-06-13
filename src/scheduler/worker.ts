@@ -92,6 +92,19 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     return;
   }
 
+  // metrics_sync is a pure data job (GSC + GA4 → history tables) — no
+  // orchestrator, no LLM. Daily-run agents consume the stored history.
+  if (runKind === 'metrics_sync') {
+    const { runMetricsSyncCycle } = await import('../core/metrics/sync');
+    try {
+      await runMetricsSyncCycle(tenantId);
+    } catch (err) {
+      logger.error('metrics_sync_cycle_failed', { tenantId, err: String(err).slice(0, 400) });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
   // seo_audit runs its own cycle (crawl + audit + memory) directly — does
   // NOT go through the orchestrator/aggregator. The next daily run consumes
   // the findings + opportunities the audit produced.

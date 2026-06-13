@@ -2,7 +2,7 @@
 //
 // Types for the per-tenant cron scheduling layer.
 
-export type RunKind = 'daily' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan'
+export type RunKind = 'daily' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync'
 
 export interface TenantSchedule {
   tenantId:    string

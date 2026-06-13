@@ -52,6 +52,7 @@ export async function querySearchAnalytics(
     endDate:    string                       // 'YYYY-MM-DD'
     dimensions: Array<'query'|'page'|'country'|'device'|'searchAppearance'|'date'>
     rowLimit?:  number
+    startRow?:  number                       // pagination offset (sync layer)
     type?:      'web'|'image'|'video'|'news'|'discover'|'googleNews'
     dimensionFilterGroups?: unknown
   },
@@ -64,6 +65,7 @@ export async function querySearchAnalytics(
       endDate:      options.endDate,
       dimensions:   options.dimensions,
       rowLimit:     options.rowLimit ?? 100,
+      startRow:     options.startRow ?? 0,
       type:         options.type ?? 'web',
       dimensionFilterGroups: options.dimensionFilterGroups as never,
     },
