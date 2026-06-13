@@ -24,6 +24,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { logger } from '../logger'
+import { withMovingMessageBreakpoint } from './prompt-cache'
 
 const TRANSIENT_ERROR_CODES = new Set([
   'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND', 'ECONNREFUSED',
@@ -72,6 +73,13 @@ export interface CallAnthropicOpts {
   retryBaseDelayMs?: number
   /** Tag for log lines so failures are attributable per call site. */
   label?: string
+  /**
+   * Add a moving cache breakpoint to the tail of the message list so the
+   * growing conversation history is cached across iterations. Default true.
+   * Set false for genuinely one-shot calls where caching can't help (harmless
+   * either way, but avoids the wrap).
+   */
+  cacheMessages?: boolean
 }
 
 /**
@@ -89,11 +97,19 @@ export async function callAnthropic(
   const baseDelay  = opts.retryBaseDelayMs ?? 1_000
   const label      = opts.label            ?? 'anthropic'
 
+  // Cache the conversation tail by default so history isn't re-billed at full
+  // rate every iteration. Applied here so all call sites benefit without
+  // migrating twice (same rationale as the streaming wrapper itself).
+  const effectiveParams: Anthropic.MessageCreateParamsNonStreaming =
+    opts.cacheMessages === false
+      ? params
+      : { ...params, messages: withMovingMessageBreakpoint(params.messages) }
+
   let attempt = 0
   for (;;) {
     attempt++
     try {
-      return await streamOnce(client, params, idleMs, label)
+      return await streamOnce(client, effectiveParams, idleMs, label)
     } catch (err) {
       const transient = isTransientAnthropicError(err)
       if (attempt >= maxRetries || !transient) {

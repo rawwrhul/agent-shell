@@ -73,3 +73,61 @@ export function cachedTools<T extends Anthropic.Tool>(tools: T[]): T[] {
     },
   ];
 }
+
+/**
+ * Add a *moving* cache breakpoint to the last block of the last message.
+ *
+ * System + tools are cached by the helpers above, but the conversation
+ * history grows every iteration and was being re-billed at full rate —
+ * which dominates cost on long audits (15+ turns). Putting a breakpoint on
+ * the tail of the message list means that on the NEXT iteration the entire
+ * prior conversation is a cached read (10% rate, no ITPM pressure), and only
+ * the newly-appended turn is billed full. The breakpoint "moves" to the new
+ * tail each call — standard incremental-conversation caching.
+ *
+ * Budget: the API allows 4 breakpoints. We use system (1) + tools (1) + this
+ * (1) = 3, so this is always safe to add. Idempotent: if the last block is
+ * already marked, returns the input untouched. Never mutates the input.
+ *
+ * Cheap calls (single user message, no reuse) get a harmless no-op breakpoint.
+ */
+export function withMovingMessageBreakpoint(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  if (messages.length === 0) return messages;
+
+  const lastIdx = messages.length - 1;
+  const last = messages[lastIdx];
+
+  // String content → wrap as a single cached text block.
+  if (typeof last.content === 'string') {
+    const rewritten: Anthropic.MessageParam = {
+      role: last.role,
+      content: [
+        {
+          type: 'text',
+          text: last.content,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    };
+    return [...messages.slice(0, lastIdx), rewritten];
+  }
+
+  const blocks = last.content;
+  if (blocks.length === 0) return messages;
+
+  const lastBlockIdx = blocks.length - 1;
+  const lastBlock = blocks[lastBlockIdx];
+
+  // Already cached → no-op (keeps us idempotent across re-wraps).
+  if ('cache_control' in lastBlock && lastBlock.cache_control) return messages;
+
+  const rewrittenBlocks: Anthropic.ContentBlockParam[] = [
+    ...blocks.slice(0, lastBlockIdx),
+    { ...lastBlock, cache_control: { type: 'ephemeral' } } as Anthropic.ContentBlockParam,
+  ];
+
+  const rewrittenMsg: Anthropic.MessageParam = { role: last.role, content: rewrittenBlocks };
+  return [...messages.slice(0, lastIdx), rewrittenMsg];
+}
