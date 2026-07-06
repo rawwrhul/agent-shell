@@ -185,6 +185,8 @@ function inferActionKind(toolName: string): import('./blocks/approval').Approval
   if (n.startsWith('framer_confirm_publish')) return 'publish_content'
   if (n.startsWith('framer_rollback_draft'))  return 'commit_data_change'
   if (n.startsWith('framer_'))                return 'modify_live_page'
+  // Google Ads mutations - spend-affecting data changes on the client account.
+  if (n.startsWith('ads_'))                   return 'commit_data_change'
   if (n.startsWith('gsc_submit') || n.startsWith('gsc_request')) return 'publish_content'
   // Outreach-type
   if (n.startsWith('email_') || n.startsWith('send_') || n.startsWith('slack_post'))

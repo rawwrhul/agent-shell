@@ -17,6 +17,7 @@ import {
   execFramerUpdateMarketingPageText,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
+import { execAdsAddNegativeKeywords, execAdsSetBidModifiers, execAdsEditKeywords } from '../integrations/googleads/executor'
 
 // Map of tool_name → handler.
 // When the agent proposes an action via `propose_action`, the toolName field on
@@ -72,6 +73,12 @@ const HANDLERS: Record<
 
   // GSC
   'gsc_submit_sitemap':        (i, c) => execGscSubmitSitemap(i as unknown as Parameters<typeof execGscSubmitSitemap>[0], c),
+
+  // Google Ads (chunk 1b) - HITL-gated mutations. Input validated by zod
+  // inside the executor; TenantAdsClient.mutate requires the approvalId.
+  'ads_add_negative_keywords': (i, c) => execAdsAddNegativeKeywords(i, c),
+  'ads_set_bid_modifiers':     (i, c) => execAdsSetBidModifiers(i, c),
+  'ads_edit_keywords':         (i, c) => execAdsEditKeywords(i, c),
 }
 
 export async function dispatchExecution(
