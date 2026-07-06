@@ -1,7 +1,7 @@
 {
   "name": "cgs-agent-shell",
   "version": "2.0.0",
-  "description": "Causal Growth Science \u2014 multi-tenant AI agent platform",
+  "description": "Causal Growth Science — multi-tenant AI agent platform",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -33,7 +33,9 @@
     "discover:copy": "tsx src/cli/discoverCopy.ts",
     "discover:links": "tsx src/cli/discoverLinks.ts",
     "discover:articles": "tsx src/cli/discoverArticles.ts",
-    "vendor:check": "tsx src/cli/vendorCheck.ts"
+    "vendor:check": "tsx src/cli/vendorCheck.ts",
+    "ads:link": "tsx src/cli/adsLink.ts",
+    "smoke:ads": "tsx scripts/smoke-google-ads.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
@@ -44,6 +46,7 @@
     "cheerio": "^1.2.0",
     "dotenv": "^16.4.5",
     "framer-api": "^0.1.9",
+    "google-ads-api": "24.1.0",
     "google-auth-library": "^10.6.2",
     "googleapis": "^140.0.1",
     "ioredis": "^5.3.2",

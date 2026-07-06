@@ -18,6 +18,11 @@ export const CGS_CREDENTIALS: CredentialDef[] = [
   { key: 'dataforseo_password', label: 'DataForSEO Password', owner: 'cgs', required: false, description: 'DataForSEO API password', howToGet: 'DataForSEO dashboard → API access' },
   { key: 'voyage_api_key',    label: 'Voyage API Key',    owner: 'cgs', required: false, description: 'High-quality embeddings for pgvector semantic memory', howToGet: 'dash.voyageai.com → API keys' },
   { key: 'assemblyai_api_key', label: 'AssemblyAI API Key', owner: 'cgs', required: false, description: 'Voice-note transcription for the quoting agent (AU English + trade vocab)', howToGet: 'assemblyai.com → Dashboard → API key' },
+  { key: 'google_ads_developer_token',   label: 'Google Ads Developer Token',    owner: 'cgs', required: false, description: 'API access token from the CGS MCC',                          howToGet: 'ads.google.com (MCC) → Tools → API Center → Developer token' },
+  { key: 'google_ads_client_id',         label: 'Google Ads OAuth Client ID',    owner: 'cgs', required: false, description: 'OAuth Desktop-app client in the CGS GCP project',           howToGet: 'console.cloud.google.com → APIs & Services → Credentials → OAuth client ID (Desktop app)' },
+  { key: 'google_ads_client_secret',     label: 'Google Ads OAuth Client Secret', owner: 'cgs', required: false, description: 'Secret paired with the OAuth client id',                   howToGet: 'Same OAuth client → client secret' },
+  { key: 'google_ads_refresh_token',     label: 'Google Ads Refresh Token',      owner: 'cgs', required: false, description: 'Minted once via consent flow as an MCC-access user. Publish the consent screen to Production or the token expires in 7 days', howToGet: 'One-time OAuth consent flow with scope https://www.googleapis.com/auth/adwords' },
+  { key: 'google_ads_login_customer_id', label: 'Google Ads MCC ID',             owner: 'cgs', required: false, description: 'CGS manager account id, digits only',                       howToGet: 'ads.google.com (MCC) → account id top right, strip dashes' },
 ]
 
 export const AGENT_CREDENTIAL_MANIFESTS: Record<string, CredentialDef[]> = {

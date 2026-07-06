@@ -14,6 +14,7 @@ import { runCacheEntriesMigration } from './migrations/cache-entries'
 import { runOpportunityScoringMigration } from './migrations/opportunity-scoring'
 import { runStrategyLayerMigration } from './migrations/strategy-layer'
 import { runTenantCmsPrefixesMigration } from './migrations/tenant-cms-prefixes'
+import { runGoogleAdsMigration } from './migrations/google-ads'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -316,6 +317,7 @@ async function migrate() {
   await runOpportunityScoringMigration(pool)
   await runStrategyLayerMigration(pool)
   await runTenantCmsPrefixesMigration(pool)
+  await runGoogleAdsMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

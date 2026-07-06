@@ -23,6 +23,7 @@ import { PEXELS_TOOLS, isPexelsToolName, executePexelsTool } from './pexels/tool
 import { AHREFS_TOOLS, isAhrefsToolName, executeAhrefsTool } from './ahrefs/tools'
 import { METRICS_TOOLS, isMetricsToolName, executeMetricsTool } from '../core/metrics/tools'
 import { SURFER_TOOLS, isSurferToolName, executeSurferTool } from './surfer/tools'
+import { GOOGLE_ADS_TOOLS, isGoogleAdsToolName, executeGoogleAdsTool } from './googleads/tools'
 
 import type { IntegrationKind } from './types'
 
@@ -33,7 +34,7 @@ export * from './types'
 function tenantIntegrations(tenant: TenantConfig): IntegrationKind[] {
   const raw = tenant.integrations
   if (!Array.isArray(raw)) return []
-  const allowed: IntegrationKind[] = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer']
+  const allowed: IntegrationKind[] = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer', 'googleads']
   return raw.filter((x): x is IntegrationKind => allowed.includes(x as IntegrationKind))
 }
 
@@ -48,13 +49,14 @@ export function buildIntegrationToolsForTenant(tenant: TenantConfig): Anthropic.
   if (enabled.includes('gsc') || enabled.includes('ga4')) tools.push(...METRICS_TOOLS)
   if (enabled.includes('ahrefs'))      tools.push(...AHREFS_TOOLS)
   if (enabled.includes('surfer'))      tools.push(...SURFER_TOOLS)
+  if (enabled.includes('googleads'))   tools.push(...GOOGLE_ADS_TOOLS)
   return tools
 }
 
 // ── Tool dispatch ───────────────────────────────────────────────────────────
 
 export function isIntegrationToolName(name: string): boolean {
-  return isFramerToolName(name) || isGscToolName(name) || isGa4ToolName(name) || isDataForSeoToolName(name) || isPexelsToolName(name) || isAhrefsToolName(name) || isSurferToolName(name) || isMetricsToolName(name)
+  return isFramerToolName(name) || isGscToolName(name) || isGa4ToolName(name) || isDataForSeoToolName(name) || isPexelsToolName(name) || isAhrefsToolName(name) || isSurferToolName(name) || isMetricsToolName(name) || isGoogleAdsToolName(name)
 }
 
 export async function executeIntegrationTool(
@@ -70,5 +72,6 @@ export async function executeIntegrationTool(
   if (isMetricsToolName(name))     return executeMetricsTool(name, input, tenant.tenantId)
   if (isAhrefsToolName(name))      return executeAhrefsTool(name, input, tenant)
   if (isSurferToolName(name))      return executeSurferTool(name, input, tenant)
+  if (isGoogleAdsToolName(name))   return executeGoogleAdsTool(name, input, tenant)
   return `Unknown integration tool: ${name}`
 }
