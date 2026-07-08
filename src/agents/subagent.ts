@@ -56,6 +56,10 @@ import {
   SEO_TOOLS, executeSeoTool, isSeoToolName,
 } from '../skills/seo'
 import {
+  ADS_SKILL_TOOLS, executeAdsSkillTool, isAdsSkillToolName,
+  WRITE_SIDE_ADS_TOOL_NAMES, buildAdsOperatingPrinciplesPrompt,
+} from '../skills/ads'
+import {
   CRAWLER_TOOLS, executeCrawlerTool, isCrawlerToolName,
 } from '../core/crawler'
 import { cachedSystem, cachedTools } from '../lib/prompt-cache'
@@ -123,6 +127,13 @@ function buildToolsForSpecialist(opts: {
       tools.push(...SEO_TOOLS)
     }
     tools.push(...CRAWLER_TOOLS)
+  }
+  if (opts.tenantSkills.includes('ads')) {
+    if (opts.taskIntent === 'investigate') {
+      tools.push(...ADS_SKILL_TOOLS.filter(t => !WRITE_SIDE_ADS_TOOL_NAMES.has(t.name)))
+    } else {
+      tools.push(...ADS_SKILL_TOOLS)
+    }
   }
   tools.push(...buildIntegrationToolsForTenant(opts.tenant))
   return tools
@@ -340,6 +351,18 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
             continue
           }
 
+          // Ads skill tools — propose_ads_action files HITL approvals;
+          // query tool is read-only. Same ctx shape as the seo skill.
+          if (isAdsSkillToolName(tb.name)) {
+            const output = await executeAdsSkillTool(
+              tb.name,
+              tb.input as Record<string, unknown>,
+              seoToolCtx,
+            )
+            results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
+            continue
+          }
+
           // Crawler tools (SEO-1) — read-only inventory queries, no hook
           if (isCrawlerToolName(tb.name)) {
             const output = await executeCrawlerTool(
@@ -542,6 +565,7 @@ function buildSubagentSystem(
     : ''
 
   const hasSeoSkill = (subTask.skills ?? []).includes('seo') || tenant.skills.includes('seo')
+  const hasAdsSkill = (subTask.skills ?? []).includes('ads') || tenant.skills.includes('ads')
 
   // Intent-aware tool guidance. Investigate-mode specialists are told
   // explicitly that the write-side SEO tools have been stripped, and that
@@ -813,6 +837,8 @@ If the change is small and reversible (e.g. a memory/note for yourself), the mem
 Use these aggressively. Anything not written to the DB doesn't appear in daily/weekly reports.\n`
     : ''
 
+  const adsPrinciplesBlock = hasAdsSkill ? `\n${buildAdsOperatingPrinciplesPrompt()}\n` : ''
+
   const businessBriefBlock = tenant.businessBrief
     ? `\n# About ${tenant.clientName} — businessBrief — authoritative, do not infer otherwise\n${tenant.businessBrief}\n`
     : ''
@@ -855,7 +881,7 @@ Never use these terms as-is. Replace them — or define them inline on first use
 If you find yourself reaching for a term not on this list and it's industry-specific, define it the same way.
 
 ${intentSection}
-
+${adsPrinciplesBlock}
 # Match depth to scope
 
 Read the request shape and infer scope BEFORE you start working.
