@@ -165,6 +165,7 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     cronTimezone:              row.cron_timezone ?? undefined,
     businessBrief:             row.business_brief ?? undefined,
     operatorSlackUserId:       row.operator_slack_user_id ?? undefined,
+    autonomyLevel:             row.autonomy_level ?? 'hitl',
   }
 }
 

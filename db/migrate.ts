@@ -15,6 +15,7 @@ import { runOpportunityScoringMigration } from './migrations/opportunity-scoring
 import { runStrategyLayerMigration } from './migrations/strategy-layer'
 import { runTenantCmsPrefixesMigration } from './migrations/tenant-cms-prefixes'
 import { runGoogleAdsMigration } from './migrations/google-ads'
+import { runTenantAutonomyMigration } from './migrations/tenant-autonomy'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -318,6 +319,7 @@ async function migrate() {
   await runStrategyLayerMigration(pool)
   await runTenantCmsPrefixesMigration(pool)
   await runGoogleAdsMigration(pool)
+  await runTenantAutonomyMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

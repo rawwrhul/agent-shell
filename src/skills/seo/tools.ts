@@ -20,6 +20,7 @@ import {
 } from '../../seo/data-store';
 import type { ActionType } from '../../seo/types';
 import { createApproval } from '../../hitl/state-store';
+import { isFullyAutonomous, isAutoExecutable, autoApproveAndExecute } from '../../hitl/autonomy';
 import { getTenant } from '../../tenants/registry';
 import { presenter } from '../../core/slack';
 import { logger } from '../../logger';
@@ -489,6 +490,33 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     previewUrl:     i.previewUrl,
     slackChannelId: effectiveChannelId ?? undefined,
   });
+
+  // 2. Tenant autonomy: at autonomy_level='full', executable actions skip the
+  //    human gate entirely — resolve as approved-by-system and enqueue the
+  //    executor immediately. No approval card is posted; the execution result
+  //    notification is the receipt. Non-executable tools (manual_operator_task,
+  //    outreach) fall through to the normal HITL card path — auto-approving an
+  //    action only a human can perform is meaningless.
+  //    NOTE: approve_blog_pitch IS auto-approved here (Stage 1 = "write it").
+  //    The publish decision (Stage 2) is gated inside execApproveBlogPitch on
+  //    the Surfer quality pipeline — quality control moved from a human eyeball
+  //    to an objective score, it did not disappear.
+  if (isFullyAutonomous(tenant) && isAutoExecutable(i.toolName)) {
+    const r = await autoApproveAndExecute(pool(), {
+      approvalId:     approval.id,
+      tenantId:       ctx.tenantId,
+      toolName:       i.toolName,
+      toolInput:      i.toolInput,
+      proposedAction: i.proposedAction,
+    });
+    if (r.approved) {
+      return `Approval ${approval.id.slice(0, 8)} auto-approved (autonomous mode) and ${r.enqueued ? 'queued for execution' : `not enqueued: ${r.reason}`}.`;
+    }
+    // Auto-approve failed → row is still pending; fall through to HITL card path.
+    logger.warn('autonomous_fallthrough_to_hitl', {
+      tenantId: ctx.tenantId, approvalId: approval.id, reason: r.reason,
+    });
+  }
 
   // 3. Post Slack card (best-effort — DB is authoritative; card is informational).
   //    Task 0.5.1: cron-fired runs (daily/weekly/end-of-week) SKIP the

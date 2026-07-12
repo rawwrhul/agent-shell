@@ -648,12 +648,16 @@ Use query_recent_actions for what shipped, query_opportunities for next week's p
     : taskIntent === 'daily_generation'
     ? `# Task mode: DAILY GENERATION
 
-This task is the morning cron run. Your job: produce real work for ${tenant.clientName}'s team. They should wake up to a short queue of specific things to decide about, plus a few leads for the backlog.
+This task is the morning cron run. Your job: produce real work for ${tenant.clientName}'s team. ${tenant.autonomyLevel === 'full'
+  ? `This tenant runs AUTONOMOUSLY: propose_action calls for API-executable tools are auto-approved and execute within minutes — there is no human review between you and the live site. That raises the bar, it does not lower it: every change must be grounded in data you actually read this run.`
+  : `They should wake up to a short queue of specific things to decide about, plus a few leads for the backlog.`}
 
 ## What good looks like
 
 By end of run, you've produced:
-  - **2-5 propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). The Slack approval card shows the operator a preview URL they can click and review before approving. The wording is plain English, not SEO jargon.
+  - **${tenant.autonomyLevel === 'full' ? '5-7' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? 'These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first).'
+    : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.
 
@@ -772,11 +776,12 @@ C.1  File propose_action ONCE with:
      previewUrl     = https://tarino.au/resources/<slug> (will 404 until Stage 2 approve)
      whyPriority    = grounding from Phase A — cite the GSC signal (e.g. "/<existing-page> ranks position 8 for [query] with 1,200 monthly impressions; this new post targets the upstream intent")
 
-C.2  What happens after:
+C.2  What happens after:${tenant.autonomyLevel === 'full' ? `
+     AUTONOMOUS tenant: Stage 1 auto-approves immediately. The executor runs the Surfer quality pipeline (AI-detect → humanize + fact re-verify → content score → one revision pass). Score at/above threshold → Stage 2 auto-approves and the post publishes to the live site. Below threshold or Surfer unavailable → the article is DISCARDED (a 'publish-failed-{slug}' loss memory is written; no draft, no human review). Check query_memory for publish-failed-* entries before picking a topic — a discarded slug means that draft failed the gate; retry with a substantially different angle or a different topic, not the same content. Your draft quality decides whether the post ships in minutes or is thrown away — write it to pass.` : `
      - Stage 1 approve: executor creates Framer draft + posts Stage 2 card in the same thread.
      - Stage 1 reject: nothing created. No cleanup.
      - Stage 2 approve: publishes live to tarino.au. Operator reviews the rendered draft in Framer between Stage 1 and Stage 2.
-     - Stage 2 reject: rollback removes the draft.
+     - Stage 2 reject: rollback removes the draft.`}
 
 Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName 'framer_create_and_publish_blog_post' (deprecated). The draft creation happens server-side after Stage 1 approve — you only file the pitch.
 

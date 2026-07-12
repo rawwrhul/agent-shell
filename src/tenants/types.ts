@@ -13,6 +13,16 @@ export type AgentType =
   | 'seo-loop'                       // R3
   | 'quoting'                        // Quoting agent (HD Level 2 Electrician)
 
+/**
+ * Tenant autonomy tier.
+ *   'hitl' — every write-side action waits for a human Approve click (default).
+ *   'full' — executable propose_action approvals and the Stage-2 publish gate
+ *            are auto-approved; actions execute immediately and Slack becomes
+ *            a receipt stream. Blog publishes additionally require the Surfer
+ *            quality gate to pass, else they fall back to a HITL card.
+ */
+export type AutonomyLevel = 'hitl' | 'full'
+
 export interface TenantConfig {
   tenantId:           string
   clientName:         string
@@ -80,6 +90,9 @@ export interface TenantConfig {
 
   /** Framer project URL, e.g. 'https://framer.com/projects/Sites--aabbccddeeff'. */
   framer_project_url?: string
+
+  /** Autonomy tier. Absent/undefined behaves as 'hitl'. */
+  autonomyLevel?: AutonomyLevel
 }
 
 export interface TenantRow {
@@ -113,4 +126,5 @@ export interface TenantRow {
   gsc_site_url: string | null
   ga4_property_id: string | null
   framer_project_url: string | null
+  autonomy_level: AutonomyLevel | null   // tenant-autonomy migration
 }

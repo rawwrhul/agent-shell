@@ -27,6 +27,7 @@ import {
 } from './types';
 import { recordScheduleFired } from './index';
 import { getTenant } from '../tenants/registry'
+import type { TenantConfig } from '../tenants/types'
 import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
 import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
@@ -247,6 +248,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
 
   const trigger: TaskTrigger =
     runKind === 'daily'        ? 'cron-daily'        :
+    runKind === 'daily_pm'     ? 'cron-daily'        :
     runKind === 'weekly'       ? 'cron-weekly'       :
     runKind === 'end-of-week'  ? 'cron-end-of-week'  :
     'manual';
@@ -254,7 +256,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   const task = await enqueueTask({
     tenantId,
     agentType:      tenant.agentType,
-    prompt:         buildPromptForRunKind(runKind, tenant.clientName),
+    prompt:         buildPromptForRunKind(runKind, tenant),
     slackChannelId: tenant.slackChannelId,
     slackUserId:    '_cron_',
     trigger,
@@ -267,19 +269,50 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   });
 }
 
-function buildPromptForRunKind(kind: RunKind, clientName: string): string {
-  if (kind === 'daily') {
+function buildPromptForRunKind(kind: RunKind, tenant: TenantConfig): string {
+  const clientName = tenant.clientName
+  if (kind === 'daily' || kind === 'daily_pm') {
     // GENERATION-FIRST: agent's job is to populate tomorrow's work pipeline,
     // not to passively report state. The subagent's system prompt
     // (task_intent='daily_generation') has the full playbook + writing-style
     // guide. Keep the user-message short so it doesn't overshadow the system.
-    return `Morning generation run for ${clientName}.
+    const runLabel = kind === 'daily_pm' ? 'Afternoon' : 'Morning'
+
+    // Autonomous tenants: two generation runs a day, each bounded to ONE
+    // article + 4-6 secondary actions. Actions execute automatically after
+    // the Surfer quality gate — no operator approval step.
+    if (tenant.autonomyLevel === 'full') {
+      return `${runLabel} generation run for ${clientName} (AUTONOMOUS tenant — approved actions execute automatically; there is no human approval step for API-executable work).
+
+Your job is DRAFTING, not DISCOVERY. Background runs already populated the opportunity bank — do not re-run audits, do not re-fetch competitor backlinks, do not re-scan for brand mentions.
+
+What to produce this run (in priority order):
+
+1. ONE new blog post on a topic gap, filed via propose_action with toolName='approve_blog_pitch' (two-stage flow; the Surfer quality gate decides publish). Do NOT attempt a second post — the token budget will not support it; the other daily run covers the second article.
+${kind === 'daily_pm' ? '   IMPORTANT: check approval_requests for today before picking a topic — the morning run already filed one post. Pick a DIFFERENT topic/cluster.\n' : ''}
+2. 4-6 on-page improvements for existing pages. Pick the right tool based on what you're changing:
+   - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
+   - Blog body refresh or content additions → framer_update_blog_body, toolInput={ slug, newContent }
+   - Blog image alt text → framer_add_blog_alt_text, toolInput={ slug, newAltText }
+   - Internal link inside a blog post body → framer_add_internal_link, toolInput={ slug, sourceText, targetUrl }
+   - Marketing page body text (About/Contact/etc) → framer_update_marketing_page_text, toolInput={ pagePath, oldText, newText }
+   - Site-wide JSON-LD schema → framer_add_site_schema, toolInput={ schemaId, jsonLd }
+   - Marketing page meta / robots.txt / sitemap / canonicals / per-page noindex / NEW LANDING PAGES → manual_operator_task with precise Framer-UI instructions (these still require the operator — genuine API limits).
+
+Every propose_action you file for an API-executable tool ships within minutes. Quality bar stays exactly as high as HITL mode: read the page before you change it, no speculative edits, no churn on pages changed in the last 7 days (check approval_requests + seo_work_log first — do NOT redo or undo recent work).
+
+3. Refine bank outreach drafts if one needs work (manual_operator_task — operator still sends outreach).
+
+Snapshot today's baseline metrics at some point so we have continuity.`;
+    }
+
+    return `${runLabel} generation run for ${clientName}.
 
 Your job today is DRAFTING, not DISCOVERY. Background runs already populated the opportunity bank with audit findings, backlink prospects, and unlinked brand mentions — the aggregator will surface those automatically from seo_opportunities into this run's Slack post. Do not re-run audits, do not re-fetch competitor backlinks, do not re-scan for brand mentions. Those are already done and waiting in the table.
 
 What to draft inline this run (in priority order):
 
-1. ONE new blog post on a topic gap. Find a keyword cluster competitors rank for that ${clientName} doesn't have a page for, draft the full post, file via propose_action with toolName='framer_create_and_publish_blog_post'. This is the primary deliverable.
+1. ONE new blog post on a topic gap. Find a keyword cluster competitors rank for that ${clientName} doesn't have a page for, draft the full post, file via propose_action with toolName='approve_blog_pitch' (two-stage pitch → publish flow). This is the primary deliverable.
 
 2. 2-3 quick on-page improvements for existing pages. Pick the right tool based on what you're changing:
    - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }

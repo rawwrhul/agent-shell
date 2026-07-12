@@ -338,7 +338,8 @@ import { createApproval } from '../../hitl/state-store'
 import { pool } from '../../memory/postgres'
 import { presenter } from '../../core/slack'
 import { getRun } from '../../core/slack/state-store'
-import { scoreAndMaybeRevise } from '../surfer/revision'
+import { scoreAndMaybeRevise, qualityGateForAutonomousPublish } from '../surfer/revision'
+import { isFullyAutonomous, autoApproveAndExecute } from '../../hitl/autonomy'
 
 export interface ApproveBlogPitchInput {
   slug:        string
@@ -358,23 +359,82 @@ export async function execApproveBlogPitch(
              error: 'missing required field in toolInput' }
   }
   try {
-    // Phase 4 Lever 1: score the draft and, if below threshold, run one
-    // revision pass BEFORE drafting — so the operator reviews the better
-    // version and sees the score on the card. Best-effort: if Surfer is
-    // unconfigured/unreachable this returns the original content untouched.
-    const revision = await scoreAndMaybeRevise({
-      model:   ctx.tenant.agentModel,
-      keyword: input.targetKeyword ?? input.title,
-      content: input.content,
-    })
-    if (revision.note) {
-      logger.info('surfer_pre_hitl_revision', {
-        slug: input.slug, available: revision.available, scored: revision.scored,
-        scoreBefore: revision.scoreBefore, scoreAfter: revision.scoreAfter,
-        revised: revision.revised, note: revision.note,
+    const autonomous = isFullyAutonomous(ctx.tenant)
+
+    // Quality pass. Two modes:
+    //   HITL (default): scoreAndMaybeRevise — best-effort, never blocks; the
+    //     operator reviews the draft anyway and sees the score on the card.
+    //   Autonomous: qualityGateForAutonomousPublish — HARD gate. AI-detect →
+    //     humanize + fact re-verify → score → one revision pass. Only a
+    //     passing score auto-publishes; anything else (including Surfer
+    //     down) falls back to a Stage-2 HITL card. Fails closed.
+    let draftContent: string
+    let reviewNote:   string | undefined
+    let gatePassed  = false
+    if (autonomous) {
+      const gate = await qualityGateForAutonomousPublish({
+        model:   ctx.tenant.agentModel,
+        keyword: input.targetKeyword ?? input.title,
+        content: input.content,
       })
+      logger.info('surfer_autonomous_quality_gate', {
+        slug: input.slug, available: gate.available, passed: gate.passed,
+        scoreBefore: gate.scoreBefore, scoreAfter: gate.scoreAfter,
+        aiDetected: gate.aiDetected, humanized: gate.humanized,
+        revised: gate.revised, note: gate.note,
+      })
+
+      // DISCARD-AND-RETRY: autonomous articles that fail the gate are
+      // dropped, not held for a human. The gate runs BEFORE draft creation,
+      // so nothing exists in Framer — clean early return. The 'loss' memory
+      // row tells the next generation run this slug/angle failed so it
+      // drafts a fresh attempt (different angle or topic) instead of
+      // resubmitting the same content. No Slack card; the run report and
+      // this executor result are the only surfacing.
+      if (!gate.passed) {
+        void onPublishFailed({
+          tenantId: ctx.tenant.tenantId,
+          slug:     input.slug,
+          error:    `autonomous quality gate: ${gate.note}`,
+        })
+        return {
+          ok:      false,
+          summary: `Article '${input.title}' discarded — ${gate.note}. No draft created. Next run should retry with a different angle or topic.`,
+          error:   gate.note,
+          detail:  {
+            slug:        input.slug,
+            autonomous:  true,
+            discarded:   true,
+            scoreBefore: gate.scoreBefore,
+            scoreAfter:  gate.scoreAfter,
+            threshold:   gate.threshold,
+          },
+        }
+      }
+
+      draftContent = gate.content
+      reviewNote   = gate.note
+      gatePassed   = gate.passed
+    } else {
+      // Phase 4 Lever 1: score the draft and, if below threshold, run one
+      // revision pass BEFORE drafting — so the operator reviews the better
+      // version and sees the score on the card. Best-effort: if Surfer is
+      // unconfigured/unreachable this returns the original content untouched.
+      const revision = await scoreAndMaybeRevise({
+        model:   ctx.tenant.agentModel,
+        keyword: input.targetKeyword ?? input.title,
+        content: input.content,
+      })
+      if (revision.note) {
+        logger.info('surfer_pre_hitl_revision', {
+          slug: input.slug, available: revision.available, scored: revision.scored,
+          scoreBefore: revision.scoreBefore, scoreAfter: revision.scoreAfter,
+          revised: revision.revised, note: revision.note,
+        })
+      }
+      draftContent = revision.content
+      reviewNote   = revision.note
     }
-    const draftContent = revision.content
 
     // 1. Create the Framer draft (writes CMS item, gets confirmationHash)
     const draft = await fr.draftAndPreviewBlogPost(ctx.tenant, {
@@ -427,9 +487,53 @@ export async function execApproveBlogPitch(
     // eslint-disable-next-line no-console
     console.log('phase9c_link_count', { slug: input.slug, hasImage: !!input.imageUrl, linkCount: _linkCount, contentLength: _content.length })
 
+    // Autonomous + quality gate passed → auto-approve Stage 2 and publish
+    // immediately. No card. Quality control happened at the Surfer gate;
+    // the execution-result notification is the operator's receipt.
+    if (autonomous && gatePassed) {
+      const auto = await autoApproveAndExecute(pool, {
+        approvalId:     stage2.id,
+        tenantId:       ctx.tenant.tenantId,
+        toolName:       'framer_confirm_publish',
+        toolInput:      {
+          confirmationHash: draft.preview.confirmationHash,
+          itemId:           draft.itemId,
+          slug:             input.slug,
+          title:            input.title,
+        },
+        proposedAction: `Publish '${input.title}' to /resources/${input.slug}`,
+      })
+      if (auto.approved) {
+        return {
+          ok:      true,
+          summary: `Draft created; Stage 2 auto-approved (autonomous, ${reviewNote ?? 'quality gate passed'}) — publish ${auto.enqueued ? 'queued' : `not enqueued: ${auto.reason}`}.`,
+          detail: {
+            itemId:            draft.itemId,
+            slug:              input.slug,
+            confirmationHash:  draft.preview.confirmationHash,
+            stage2ApprovalId:  stage2.id,
+            stage2PreviewUrl,
+            framerProjectUrl:  projectUrl,
+            productionUrl:     `https://tarino.au/resources/${input.slug}`,
+            autonomous:        true,
+            qualityNote:       reviewNote,
+          },
+        }
+      }
+      // Auto-approve failed → row still pending; fall through to the card
+      // path so a human can rescue the publish.
+      logger.warn('autonomous_stage2_fallthrough_to_hitl', {
+        slug: input.slug, stage2ApprovalId: stage2.id, reason: auto.reason,
+      })
+    }
+
     // Phase 9c: actually post the Stage 2 Slack card. Phase 8 inserted
     // the DB row but forgot the presenter call — Stage 2 row existed
     // but the operator never saw a card to act on.
+    // Autonomous tenants only land here on an auto-approve INFRA failure
+    // (gate passed but resolve/enqueue errored) — the card is the rescue
+    // path so a passing draft isn't lost. Gate failures never get here;
+    // they were discarded above.
     const run = await getRun(pool, ctx.taskId)
     const channelId = run?.channelId ?? ctx.tenant.slackChannelId
     if (channelId) {
@@ -440,12 +544,14 @@ export async function execApproveBlogPitch(
           taskId:     ctx.taskId,
           toolName:   'framer_confirm_publish',
           riskLevel:  'high',
-          riskReason: 'Publishes the drafted post to the live site.',
+          riskReason: autonomous
+            ? 'Autonomous publish RESCUE: quality gate passed but auto-approve failed. Approve to publish.'
+            : 'Publishes the drafted post to the live site.',
           approvalId: stage2.id,
           previewUrl: stage2PreviewUrl,
           tenantName: ctx.tenant.clientName,
-          summary:    revision.note
-            ? `Publish '${input.title}' to /resources/${input.slug} · ${revision.note}`
+          summary:    reviewNote
+            ? `Publish '${input.title}' to /resources/${input.slug} · ${reviewNote}`
             : `Publish '${input.title}' to /resources/${input.slug}`,
         })
       } catch (err) {
@@ -457,7 +563,9 @@ export async function execApproveBlogPitch(
 
     return {
       ok:      true,
-      summary: `Draft created in Framer. Stage 2 card posted (approval id ${stage2.id.slice(0, 8)}).`,
+      summary: autonomous
+        ? `Draft created; gate passed but auto-approve failed — Stage 2 rescue card posted (approval id ${stage2.id.slice(0, 8)}).`
+        : `Draft created in Framer. Stage 2 card posted (approval id ${stage2.id.slice(0, 8)}).`,
       detail: {
         itemId:            draft.itemId,
         slug:              input.slug,
@@ -466,6 +574,8 @@ export async function execApproveBlogPitch(
         stage2PreviewUrl,
         framerProjectUrl:  projectUrl,
         productionUrl:     `https://tarino.au/resources/${input.slug}`,
+        autonomous,
+        qualityNote:       reviewNote,
       },
     }
   } catch (err) {

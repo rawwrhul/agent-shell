@@ -2,7 +2,12 @@
 //
 // Types for the per-tenant cron scheduling layer.
 
-export type RunKind = 'daily' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create'
+// 'daily_pm' — second daily generation run for high-velocity autonomous
+// tenants. Same behaviour as 'daily' (generation prompt, cron-daily trigger);
+// separate run_kind because tenant_schedules PK is (tenant_id, run_kind) so
+// one tenant can't hold two 'daily' rows. Two bounded runs, not one double
+// run: a single run can't fit two full article drafts in the token budget.
+export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create'
 
 export interface TenantSchedule {
   tenantId:    string
