@@ -58,12 +58,16 @@ export async function runMetricsHistoryMigration(pool: Pool): Promise<void> {
       ON traffic_history (tenant_id, date DESC)`)
 
   // Codify the run_kind constraint (idempotent drop/recreate).
+  // MUST stay a superset of every kind ever inserted — a narrower re-add
+  // fails on existing rows (learned twice now: seo-2-auditor, then daily_pm).
+  // tenant-autonomy re-adds the same list later in the chain; keep in sync.
   await pool.query(`ALTER TABLE tenant_schedules DROP CONSTRAINT IF EXISTS tenant_schedules_run_kind_check`)
   await pool.query(`
     ALTER TABLE tenant_schedules ADD CONSTRAINT tenant_schedules_run_kind_check
-      CHECK (run_kind IN ('daily','weekly','end-of-week','seo_audit',
+      CHECK (run_kind IN ('daily','daily_pm','weekly','end-of-week','seo_audit',
                           'backlink_prospect','brand_mention_scan','metrics_sync','strategy_refresh',
-                          'metadata_edit','copy_optimise','internal_link','article_create'))`)
+                          'metadata_edit','copy_optimise','internal_link','article_create',
+                          'outcome_score'))`)
 
   console.log('  metrics-history: ranking_history + traffic_history ready; run_kind constraint codified')
 }
