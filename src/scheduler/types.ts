@@ -7,7 +7,10 @@
 // separate run_kind because tenant_schedules PK is (tenant_id, run_kind) so
 // one tenant can't hold two 'daily' rows. Two bounded runs, not one double
 // run: a single run can't fit two full article drafts in the token budget.
-export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create'
+// 'outcome_score' — deterministic ship→measure→policy loop: scores executed
+// approvals against GSC deltas (page vs site control) and writes win/loss
+// memories the generation runs consume. Silent, no LLM, no Slack.
+export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create' | 'outcome_score'
 
 export interface TenantSchedule {
   tenantId:    string

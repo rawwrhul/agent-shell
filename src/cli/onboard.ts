@@ -118,6 +118,9 @@ async function main() {
     // Before the daily runs so agents see fresh history. Stagger-safe:
     // pure data job, no LLM contention.
     wanted.push({ runKind: 'metrics_sync', cronExpr: '30 5 * * *' })
+    // Outcome scoring needs ranking_history, so it's GSC-gated. After
+    // metrics_sync, before the daily generation run consumes the memories.
+    wanted.push({ runKind: 'outcome_score', cronExpr: '0 7 * * *' })
   }
   for (const s of wanted) {
     try {

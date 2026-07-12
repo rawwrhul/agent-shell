@@ -21,6 +21,9 @@ import {
 import type { ActionType } from '../../seo/types';
 import { createApproval } from '../../hitl/state-store';
 import { isFullyAutonomous, isAutoExecutable, autoApproveAndExecute } from '../../hitl/autonomy';
+import { checkCannibalization } from './cannibalization';
+import { checkEditGates, EDIT_GATE_TOOLS } from './edit-gates';
+import { criticReview } from './critic';
 import { getTenant } from '../../tenants/registry';
 import { presenter } from '../../core/slack';
 import { logger } from '../../logger';
@@ -438,6 +441,24 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         `PITCH_VALIDATION_FAILED: toolInput.content has ${linkCount} internal links; you need at least 2. Embed 2-4 <a href="/resources/SLUG">descriptive anchor text</a> elements inside the body, linking to existing Tarino posts from framer_list_blog_items. Internal links are a hard requirement, not optional.`
       )
     }
+    // Cannibalization guard: slug collision, near-duplicate title, and
+    // target-keyword overlap against pages that already rank. Fail-open on
+    // missing data; blocks only on positive evidence of overlap.
+    try {
+      const guardTenant = await getTenant(ctx.tenantId).catch(() => null)
+      const cannibal = await checkCannibalization(pool(), {
+        tenantId:      ctx.tenantId,
+        slug:          typeof ti.slug === 'string' ? ti.slug : '',
+        title:         typeof ti.title === 'string' ? ti.title : '',
+        targetKeyword: typeof ti.targetKeyword === 'string' ? ti.targetKeyword : undefined,
+        cmsPrefix:     guardTenant?.cmsPathPrefixes?.[0] ?? '/resources/',
+      })
+      errors.push(...cannibal)
+    } catch (err) {
+      logger.info('cannibalization_guard_skipped', {
+        tenantId: ctx.tenantId, err: String(err).slice(0, 200),
+      })
+    }
     if (errors.length > 0) {
       logger.warn('seo_propose_action_pitch_validation_failed', {
         tenantId: ctx.tenantId, taskId: ctx.taskId,
@@ -457,6 +478,57 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
   let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
   try { tenant = await getTenant(ctx.tenantId); } catch { /* fall through with null */ }
   const effectiveChannelId = ctx.channelId ?? tenant?.slackChannelId ?? null;
+
+  // Deterministic pre-flight gates for non-article live-site edits —
+  // AUTONOMOUS tenants only (no human eyeball downstream, so the checks a
+  // reviewer would do move here: input bounds, dup titles, dead link
+  // targets, protect-winners, churn cap). HITL tenants unchanged.
+  if (isFullyAutonomous(tenant) && EDIT_GATE_TOOLS.has(i.toolName)) {
+    try {
+      const gateErrors = await checkEditGates(pool(), {
+        tenantId:  ctx.tenantId,
+        toolName:  i.toolName,
+        toolInput: (i.toolInput ?? {}) as Record<string, unknown>,
+        cmsPrefix: tenant?.cmsPathPrefixes?.[0] ?? '/resources/',
+      });
+      if (gateErrors.length > 0) {
+        logger.warn('seo_propose_action_edit_gate_failed', {
+          tenantId: ctx.tenantId, taskId: ctx.taskId, toolName: i.toolName,
+          errorCount: gateErrors.length,
+        });
+        return gateErrors.join('\n\n') + '\n\nAddress the issue and re-file, or move on to a different action. Do not re-file the same input.';
+      }
+    } catch (err) {
+      logger.info('seo_edit_gates_skipped', {
+        tenantId: ctx.tenantId, err: String(err).slice(0, 200),
+      });
+    }
+  }
+
+  // Critic pass — AUTONOMOUS tenants, auto-executable tools only. One
+  // adversarial LLM call whose only job is to find the concrete reason this
+  // action shouldn't ship (ungrounded, off-lane, risky, pointless). Runs
+  // AFTER the deterministic gates and BEFORE the approval row exists, so a
+  // rejected action leaves no state. Fails open on critic errors — the
+  // deterministic gates are the hard floor, the critic is the judgment layer.
+  if (isFullyAutonomous(tenant) && isAutoExecutable(i.toolName)) {
+    const verdict = await criticReview({
+      model:          tenant?.agentModel ?? config.AGENT_MODEL,
+      toolName:       i.toolName,
+      toolInput:      (i.toolInput ?? {}) as Record<string, unknown>,
+      proposedAction: i.proposedAction,
+      whyPriority:    i.whyPriority,
+      businessBrief:  tenant?.businessBrief,
+      targetDomain:   tenant?.targetDomain ?? undefined,
+    });
+    if (verdict.available && !verdict.ship) {
+      logger.warn('seo_propose_action_critic_rejected', {
+        tenantId: ctx.tenantId, taskId: ctx.taskId, toolName: i.toolName,
+        reason: verdict.reason,
+      });
+      return `CRITIC_REJECTED: ${verdict.reason}\n\nEither address this concern with better grounding and re-file, or drop the action and move to the next one. Do not re-file the same input unchanged.`;
+    }
+  }
 
   // Phase 6: enrich whyPriority with a content preview for create-and-publish
   // approvals, so the Slack card shows what's about to be published.

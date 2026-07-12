@@ -228,6 +228,28 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     return;
   }
 
+  // outcome_score cycle: deterministic per-action outcome measurement
+  // (GSC deltas vs site control → win/loss memories). Silent. Run AFTER
+  // metrics_sync so the trailing GSC window is fresh.
+  if (runKind === 'outcome_score') {
+    logger.info('outcome_score_cycle_starting_from_worker', { tenantId });
+    try {
+      const { runOutcomeScoreCycle } = await import('../skills/seo-outcomes');
+      const r = await runOutcomeScoreCycle(tenantId);
+      logger.info('outcome_score_cycle_completed_from_worker', {
+        tenantId, scanned: r.scanned, scored: r.scored,
+        wins: r.wins, losses: r.losses, neutral: r.neutral,
+        skipped: r.skipped, errors: r.errors,
+      });
+    } catch (err) {
+      logger.error('outcome_score_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
   // article_create discovery cycle (Phase 2, unit 3). Silent: files scored
   // new-content opportunities for underserved strategy clusters. No Slack.
   if (runKind === 'article_create') {
@@ -290,7 +312,7 @@ What to produce this run (in priority order):
 
 1. ONE new blog post on a topic gap, filed via propose_action with toolName='approve_blog_pitch' (two-stage flow; the Surfer quality gate decides publish). Do NOT attempt a second post — the token budget will not support it; the other daily run covers the second article.
 ${kind === 'daily_pm' ? '   IMPORTANT: check approval_requests for today before picking a topic — the morning run already filed one post. Pick a DIFFERENT topic/cluster.\n' : ''}
-2. 4-6 on-page improvements for existing pages. Pick the right tool based on what you're changing:
+2. Up to 4-6 on-page improvements for existing pages — QUALITY FLOOR, not quota: every action must be grounded in data you read this run and pass the server-side gates. If the bank only supports 3 strong actions today, file 3. Never manufacture a mediocre edit to hit a count; padded actions get rejected by the critic and waste the run. Pick the right tool based on what you're changing:
    - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
    - Blog body refresh or content additions → framer_update_blog_body, toolInput={ slug, newContent }
    - Blog image alt text → framer_add_blog_alt_text, toolInput={ slug, newAltText }

@@ -655,8 +655,8 @@ This task is the morning cron run. Your job: produce real work for ${tenant.clie
 ## What good looks like
 
 By end of run, you've produced:
-  - **${tenant.autonomyLevel === 'full' ? '5-7' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
-    ? 'These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first).'
+  - **${tenant.autonomyLevel === 'full' ? 'Up to 5-7' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? 'These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Quality floor over quota: 3 grounded actions beat 7 padded ones — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky, so padding just wastes the run.'
     : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.
@@ -719,6 +719,8 @@ Your toolbelt includes Framer (read + draft creation), DataForSEO (keywords, com
 
 Before filing a propose_action or log_opportunity, quickly check approval_requests and seo_opportunities for the last 7 days to avoid surfacing the same thing twice.
 
+**Learn from measured outcomes (highest-authority signal).** Call query_memory with type='win' and type='loss' early in the run. Keys prefixed 'outcome-' are MEASURED results: GSC clicks/position deltas for the exact page each past action targeted, compared against the rest of the site as a control. These are ground truth, not opinion — weight them above every other prior. Do more of the action types and page types that won; stop proposing the ones that lost. If title rewrites keep winning and schema additions keep landing neutral, your action mix this run should reflect that.
+
 **Learn from past runs.** Call query_memory with type='learning' early in the run — the weekly audit writes retrospective findings here (keys prefixed 'retro-') about what kinds of changes have actually moved the needle for ${tenant.clientName} in the past. If past data shows (for example) that title-rewrites for /service-pages moved rankings 3+ spots, lean into more of that. If it shows that schema additions did nothing, deprioritise those. The retrospective memories are how the agent gets smarter over time — don't ignore them.
 
 ## On Framer blog posts (research-first, two-stage approval)
@@ -750,6 +752,10 @@ If A.1–A.5 produces no candidate that passes, STOP and surface the situation t
 
 B.1  Call framer_get_changed_paths. If pending changes exist, STOP — surface to operator. Publishing would bundle them.
 
+B.1b Ground the draft in what actually ranks BEFORE writing a word (if Surfer tools are in your toolbelt):
+     - Call surfer_content_guidelines with the validated keyword from A.5. Extract the prominent terms, target word-count range, and heading structure. Write the draft AGAINST these from the first pass — the publish gate scores against the same Surfer editor, so drafting blind means discards and wasted runs.
+     - Look at the top 2-3 ranking pages for the keyword (dataforseo SERP data, or analyze_page on their URLs). Note the intent they serve, their depth, and what they miss — your post must match the intent and beat the depth or the angle, not just exist.
+
 B.2  Re-read the 2-3 highest-traffic posts from A.2. They ARE the voice and structure you mirror. Cadence, paragraph length, register, how subheads work, whether posts close with a CTA or a thought. Do not invent a new tone.
 
 B.3  Write the post in full — title + slug + content. Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>. Headline should map to the validated query cluster from A.5.
@@ -770,7 +776,8 @@ If you file without these, the system returns PITCH_VALIDATION_FAILED and you ha
 
 C.1  File propose_action ONCE with:
      toolName       = "approve_blog_pitch"
-     toolInput      = { slug, title, content, imageUrl, whyThisTopic }
+     toolInput      = { slug, title, content, imageUrl, whyThisTopic, targetKeyword }
+     (targetKeyword = the validated primary query from A.5 — it drives the Surfer content score AND the cannibalization check, so pass the real keyword, not the title)
      proposedAction = one-line plain-English pitch summary for the operator
      priority       = P0 / P1 / P2 / P3
      previewUrl     = https://tarino.au/resources/<slug> (will 404 until Stage 2 approve)
