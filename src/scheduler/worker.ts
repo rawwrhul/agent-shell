@@ -250,6 +250,26 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     return;
   }
 
+  // daily_digest cycle: deterministic end-of-day record written to the
+  // daily_digests table. DB-only — sends nothing anywhere.
+  if (runKind === 'daily_digest') {
+    logger.info('daily_digest_cycle_starting_from_worker', { tenantId });
+    try {
+      const { runDailyDigestCycle } = await import('../skills/daily-digest');
+      const r = await runDailyDigestCycle(tenantId);
+      logger.info('daily_digest_cycle_completed_from_worker', {
+        tenantId, digestDate: r.digestDate, actions: r.actions,
+        articles: r.articles, written: r.written,
+      });
+    } catch (err) {
+      logger.error('daily_digest_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
   // article_create discovery cycle (Phase 2, unit 3). Silent: files scored
   // new-content opportunities for underserved strategy clusters. No Slack.
   if (runKind === 'article_create') {

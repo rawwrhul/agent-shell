@@ -32,7 +32,7 @@ export async function runTenantAutonomyMigration(pool: Pool): Promise<void> {
       CHECK (run_kind IN ('daily','daily_pm','weekly','end-of-week','seo_audit',
                           'backlink_prospect','brand_mention_scan','metrics_sync','strategy_refresh',
                           'metadata_edit','copy_optimise','internal_link','article_create',
-                          'outcome_score'))`)
+                          'outcome_score','daily_digest'))`)
 
   console.log('  tenant-autonomy: autonomy_level column ready; daily_pm + outcome_score allowed in run_kind')
 }

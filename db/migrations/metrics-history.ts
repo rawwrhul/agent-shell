@@ -67,7 +67,7 @@ export async function runMetricsHistoryMigration(pool: Pool): Promise<void> {
       CHECK (run_kind IN ('daily','daily_pm','weekly','end-of-week','seo_audit',
                           'backlink_prospect','brand_mention_scan','metrics_sync','strategy_refresh',
                           'metadata_edit','copy_optimise','internal_link','article_create',
-                          'outcome_score'))`)
+                          'outcome_score','daily_digest'))`)
 
   console.log('  metrics-history: ranking_history + traffic_history ready; run_kind constraint codified')
 }
