@@ -313,6 +313,21 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
 
 function buildPromptForRunKind(kind: RunKind, tenant: TenantConfig): string {
   const clientName = tenant.clientName
+
+  // CMS-aware tool naming (one tenant, one CMS).
+  const isWebflow = Array.isArray(tenant.integrations) && tenant.integrations.includes('webflow')
+  const pfx = isWebflow ? 'webflow' : 'framer'
+  const cmsToolList = `   - Blog meta (title/description) → ${pfx}_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
+   - Blog body refresh or content additions → ${pfx}_update_blog_body, toolInput={ slug, newContent }
+   - Blog image alt text → ${pfx}_add_blog_alt_text, toolInput={ slug, newAltText }
+   - Internal link inside a blog post body → ${pfx}_add_internal_link, toolInput={ slug, sourceText, targetUrl }
+   - Marketing page body text (About/Contact/etc) → ${pfx}_update_marketing_page_text, toolInput={ pagePath, oldText, newText }
+${isWebflow
+    ? `   - Marketing/service page meta (title/description) → webflow_update_page_meta, toolInput={ pagePath, newTitle?, newDescription? } (API-writable on Webflow — never a manual task)
+   - robots.txt / sitemap / canonicals / per-page noindex / site-wide schema / NEW LANDING PAGES → manual_operator_task with precise Webflow-UI instructions (genuine API limits).`
+    : `   - Site-wide JSON-LD schema → framer_add_site_schema, toolInput={ schemaId, jsonLd }
+   - Marketing page meta / robots.txt / sitemap / canonicals / per-page noindex / NEW LANDING PAGES → manual_operator_task with precise Framer-UI instructions (these are genuine API limits, not gaps).`}`
+
   if (kind === 'daily' || kind === 'daily_pm') {
     // GENERATION-FIRST: agent's job is to populate tomorrow's work pipeline,
     // not to passively report state. The subagent's system prompt
@@ -333,13 +348,7 @@ What to produce this run (in priority order):
 1. ONE new blog post on a topic gap, filed via propose_action with toolName='approve_blog_pitch' (two-stage flow; the Surfer quality gate decides publish). Do NOT attempt a second post — the token budget will not support it; the other daily run covers the second article.
 ${kind === 'daily_pm' ? '   IMPORTANT: check approval_requests for today before picking a topic — the morning run already filed one post. Pick a DIFFERENT topic/cluster.\n' : ''}
 2. Up to 4-6 on-page improvements for existing pages — QUALITY FLOOR, not quota: every action must be grounded in data you read this run and pass the server-side gates. If the bank only supports 3 strong actions today, file 3. Never manufacture a mediocre edit to hit a count; padded actions get rejected by the critic and waste the run. Pick the right tool based on what you're changing:
-   - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
-   - Blog body refresh or content additions → framer_update_blog_body, toolInput={ slug, newContent }
-   - Blog image alt text → framer_add_blog_alt_text, toolInput={ slug, newAltText }
-   - Internal link inside a blog post body → framer_add_internal_link, toolInput={ slug, sourceText, targetUrl }
-   - Marketing page body text (About/Contact/etc) → framer_update_marketing_page_text, toolInput={ pagePath, oldText, newText }
-   - Site-wide JSON-LD schema → framer_add_site_schema, toolInput={ schemaId, jsonLd }
-   - Marketing page meta / robots.txt / sitemap / canonicals / per-page noindex / NEW LANDING PAGES → manual_operator_task with precise Framer-UI instructions (these still require the operator — genuine API limits).
+${cmsToolList}
 
 Every propose_action you file for an API-executable tool ships within minutes. Quality bar stays exactly as high as HITL mode: read the page before you change it, no speculative edits, no churn on pages changed in the last 7 days (check approval_requests + seo_work_log first — do NOT redo or undo recent work).
 
@@ -357,13 +366,7 @@ What to draft inline this run (in priority order):
 1. ONE new blog post on a topic gap. Find a keyword cluster competitors rank for that ${clientName} doesn't have a page for, draft the full post, file via propose_action with toolName='approve_blog_pitch' (two-stage pitch → publish flow). This is the primary deliverable.
 
 2. 2-3 quick on-page improvements for existing pages. Pick the right tool based on what you're changing:
-   - Blog meta (title/description) → framer_update_blog_meta, toolInput={ slug, newTitle?, newDescription? }
-   - Blog body refresh or content additions → framer_update_blog_body, toolInput={ slug, newContent }
-   - Blog image alt text → framer_add_blog_alt_text, toolInput={ slug, newAltText }
-   - Internal link inside a blog post body → framer_add_internal_link, toolInput={ slug, sourceText, targetUrl }
-   - Marketing page body text (About/Contact/etc) → framer_update_marketing_page_text, toolInput={ pagePath, oldText, newText }
-   - Site-wide JSON-LD schema → framer_add_site_schema, toolInput={ schemaId, jsonLd }
-   - Marketing page meta / robots.txt / sitemap / canonicals / per-page noindex → manual_operator_task with precise Framer-UI instructions (these are genuine API limits, not gaps).
+${cmsToolList}
 
 3. Refine bank outreach drafts if you spot one that needs work. The backlink_prospector skill drafts a generic pitch for each prospect; if you can write a stronger version for a specific high-value target, do so and file via propose_action with toolName='manual_operator_task' explaining the upgrade.
 

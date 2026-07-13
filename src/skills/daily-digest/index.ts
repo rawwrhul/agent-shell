@@ -88,7 +88,8 @@ export async function runDailyDigestCycle(tenantId: string): Promise<DigestCycle
   }))
 
   const articles: DigestArticle[] = actionRows
-    .filter(r => r.tool_name === 'framer_confirm_publish' && (r.executed_outcome ?? '').startsWith('success'))
+    .filter(r => (r.tool_name === 'framer_confirm_publish' || r.tool_name === 'webflow_confirm_publish')
+              && (r.executed_outcome ?? '').startsWith('success'))
     .map(r => {
       const ti = r.tool_input ?? {}
       const slug = typeof ti.slug === 'string' ? ti.slug : ''

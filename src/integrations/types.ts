@@ -5,9 +5,9 @@
 import type { TenantConfig } from '../tenants/types'
 
 /** Identifier for integration kinds. New integrations get added here. */
-export type IntegrationKind = 'framer' | 'gsc' | 'ga4' | 'dataforseo' | 'pexels' | 'ahrefs' | 'surfer' | 'googleads'
+export type IntegrationKind = 'framer' | 'webflow' | 'gsc' | 'ga4' | 'dataforseo' | 'pexels' | 'ahrefs' | 'surfer' | 'googleads'
 
-export const KNOWN_INTEGRATIONS: IntegrationKind[] = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer', 'googleads']
+export const KNOWN_INTEGRATIONS: IntegrationKind[] = ['framer', 'webflow', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer', 'googleads']
 
 /** Context passed to every integration handler / executor. */
 export interface IntegrationContext {

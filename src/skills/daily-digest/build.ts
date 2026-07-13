@@ -58,6 +58,11 @@ const SLUG_TOOLS = new Set([
   'framer_update_blog_body',
   'framer_add_blog_alt_text',
   'framer_add_internal_link',
+  'webflow_confirm_publish',
+  'webflow_update_blog_meta',
+  'webflow_update_blog_body',
+  'webflow_add_blog_alt_text',
+  'webflow_add_internal_link',
 ])
 
 export function productionUrlFor(
@@ -74,7 +79,9 @@ export function productionUrlFor(
     const prefix = cmsPrefix.endsWith('/') ? cmsPrefix : `${cmsPrefix}/`
     return `${base}${prefix}${slug}`
   }
-  if (toolName === 'framer_update_marketing_page_text') {
+  if (toolName === 'framer_update_marketing_page_text'
+    || toolName === 'webflow_update_marketing_page_text'
+    || toolName === 'webflow_update_page_meta') {
     const p = typeof toolInput.pagePath === 'string' ? toolInput.pagePath.trim() : ''
     if (!p) return null
     return `${base}${p.startsWith('/') ? p : `/${p}`}`

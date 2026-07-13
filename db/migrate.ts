@@ -17,6 +17,7 @@ import { runTenantCmsPrefixesMigration } from './migrations/tenant-cms-prefixes'
 import { runGoogleAdsMigration } from './migrations/google-ads'
 import { runTenantAutonomyMigration } from './migrations/tenant-autonomy'
 import { runDailyDigestsMigration } from './migrations/daily-digests'
+import { runWebflowTenantMigration } from './migrations/webflow-tenant'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -322,6 +323,7 @@ async function migrate() {
   await runGoogleAdsMigration(pool)
   await runTenantAutonomyMigration(pool)
   await runDailyDigestsMigration(pool)
+  await runWebflowTenantMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

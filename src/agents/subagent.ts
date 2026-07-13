@@ -567,6 +567,20 @@ function buildSubagentSystem(
   const hasSeoSkill = (subTask.skills ?? []).includes('seo') || tenant.skills.includes('seo')
   const hasAdsSkill = (subTask.skills ?? []).includes('ads') || tenant.skills.includes('ads')
 
+  // CMS-aware tool naming: one tenant has exactly one CMS. The daily
+  // generation playbook below references CMS tools by name; Webflow tenants
+  // get the webflow_* set, everyone else the framer_* set.
+  const isWebflowCms = Array.isArray(tenant.integrations) && tenant.integrations.includes('webflow')
+  const cmsName      = isWebflowCms ? 'Webflow' : 'Framer'
+  const cmsListTool  = isWebflowCms ? 'webflow_list_blog_items' : 'framer_list_blog_items'
+  const cmsPrefix    = tenant.cmsPathPrefixes?.[0] ?? '/resources/'
+  const cmsDomain    = tenant.targetDomain ?? 'the production site'
+  const cmsMetaTool  = isWebflowCms ? 'webflow_update_blog_meta' : 'framer_update_blog_meta'
+  const cmsBodyTool  = isWebflowCms ? 'webflow_update_blog_body' : 'framer_update_blog_body'
+  const cmsAltTool   = isWebflowCms ? 'webflow_add_blog_alt_text' : 'framer_add_blog_alt_text'
+  const cmsLinkTool  = isWebflowCms ? 'webflow_add_internal_link' : 'framer_add_internal_link'
+  const cmsPageText  = isWebflowCms ? 'webflow_update_marketing_page_text' : 'framer_update_marketing_page_text'
+
   // Intent-aware tool guidance. Investigate-mode specialists are told
   // explicitly that the write-side SEO tools have been stripped, and that
   // their job is to return findings as prose. Propose-changes-mode
@@ -667,11 +681,11 @@ A run that produces zero approvals AND zero opportunities is a failed run, not a
 
 Article creation is the **primary growth lever** for this tenant. Draft EXACTLY ONE blog post per run — pick the strongest topic gap and execute it well. Do NOT attempt 2 or more blog posts in a single run; the token budget will not support it and the run will hang at synthesis. The other categories below are real work, but they are secondary — they harden what already exists. New articles are how we expand surface area and rankings into clusters we don't currently own.
 
-**New blog posts — primary focus.** What is ${tenant.clientName} not writing about, that competitors are? Use DataForSEO keyword data and competitor sitemaps to find topic gaps with commercial intent. If you spot a clear winner, write the post and file it directly via propose_action with toolName='framer_create_and_publish_blog_post' — toolInput holds the full content inline ({ slug, title, content, imageUrl? }). The executor creates the CMS item AND publishes on operator approval, in one atomic step. Nothing is created in Framer until approval — clean reject = no cleanup needed. For NEW LANDING PAGES (not blog posts), the Framer Server API can't create them programmatically — propose_action with toolName='manual_operator_task' instead, giving the operator the page outline + a list of pages to add to nav etc.
+**New blog posts — primary focus.** What is ${tenant.clientName} not writing about, that competitors are? Use DataForSEO keyword data and competitor sitemaps to find topic gaps with commercial intent. File the post via propose_action with toolName='approve_blog_pitch' (two-stage flow — full playbook below). For NEW LANDING PAGES (not blog posts), the ${cmsName} API can't create them programmatically — propose_action with toolName='manual_operator_task' instead, giving the operator the page outline + a list of pages to add to nav etc.
 
-**Internal links between existing pages.** Two pages that obviously belong linked but aren't. The Framer Server API can't edit existing page content programmatically today, so file these via propose_action with toolName='manual_operator_task' and toolInput={ instruction: <source page + target page + exact anchor text + where to place the link>, category: 'linking' }. The operator does the actual edit in Framer's UI.
+**Internal links between existing blog posts.** Two posts that obviously belong linked but aren't → propose_action with toolName='${cmsLinkTool}', toolInput={ slug, sourceText, targetUrl }. sourceText must be the exact verbatim text on the page. Internal links on non-blog marketing pages → manual_operator_task.
 
-**Additive copy or meta on existing pages.** Same constraint as internal links: no programmatic page edits. File these via propose_action with toolName='manual_operator_task' and toolInput={ instruction: <the exact copy + the page + where on the page>, category: 'copy' or 'meta' }. New FAQ sections, expanded meta descriptions, additional paragraphs — all valuable and now ship through the same approval workflow as blog posts, just acknowledged-on-approve rather than auto-published.
+**Copy or meta on existing pages.** Blog meta → '${cmsMetaTool}' ({ slug, newTitle?, newDescription? }). Blog body additions/refreshes → '${cmsBodyTool}' ({ slug, newContent }). Marketing page body text → '${cmsPageText}' ({ pagePath, oldText, newText }).${isWebflowCms ? ` Marketing/service page META (title/description) is API-writable on Webflow → 'webflow_update_page_meta' ({ pagePath, newTitle?, newDescription? }) — do NOT file these as manual tasks.` : ` Marketing page meta is NOT API-writable on Framer → manual_operator_task with precise UI instructions.`}
 
 **Backlink leads from competitor analysis.** Use dataforseo_backlinks_summary to find domains linking to competitors but not to ${tenant.clientName}. These go to seo_opportunities (log_opportunity) — backlinks need human outreach, not a click-to-approve.
 
@@ -715,7 +729,7 @@ For **log_opportunity** entries, same style — but you have a bit more room to 
 
 ## What you have to work with
 
-Your toolbelt includes Framer (read + draft creation), DataForSEO (keywords, competitors, backlinks), Google Search Console, GA4, and the standard analyze_page tool. If something you need seems missing, call the integration tools first to verify rather than assuming unavailable — the toolbelt at run start is logged so you can be confident about what you have.
+Your toolbelt includes ${cmsName} (read + draft creation), DataForSEO (keywords, competitors, backlinks), Google Search Console, GA4, and the standard analyze_page tool. If something you need seems missing, call the integration tools first to verify rather than assuming unavailable — the toolbelt at run start is logged so you can be confident about what you have.
 
 Before filing a propose_action or log_opportunity, quickly check approval_requests and seo_opportunities for the last 7 days to avoid surfacing the same thing twice.
 
@@ -723,15 +737,15 @@ Before filing a propose_action or log_opportunity, quickly check approval_reques
 
 **Learn from past runs.** Call query_memory with type='learning' early in the run — the weekly audit writes retrospective findings here (keys prefixed 'retro-') about what kinds of changes have actually moved the needle for ${tenant.clientName} in the past. If past data shows (for example) that title-rewrites for /service-pages moved rankings 3+ spots, lean into more of that. If it shows that schema additions did nothing, deprioritise those. The retrospective memories are how the agent gets smarter over time — don't ignore them.
 
-## On Framer blog posts (research-first, two-stage approval)
+## On ${cmsName} blog posts (research-first, two-stage approval)
 
-Two operator-facing gates: PITCH (you propose; operator says is-this-worth-writing?) then PUBLISH (operator reviews the actual draft in Framer; says ship-it?). Both are propose_action calls — you only ever file one card per post. The second card is created by the executor on the operator's first approval.
+Two operator-facing gates: PITCH (you propose; operator says is-this-worth-writing?) then PUBLISH (operator reviews the actual draft in ${cmsName}; says ship-it?). Both are propose_action calls — you only ever file one card per post. The second card is created by the executor on the operator's first approval.
 
-CRITICAL: BEFORE proposing anything, ground the topic in TARINO'S actual performance data. A "content gap" is not an opportunity by itself — a topic that has search demand AND fits Tarino's commercial model AND is adjacent to content that's already working IS. Skipping the grounding step produces off-brand topics that waste the operator's time.
+CRITICAL: BEFORE proposing anything, ground the topic in ${tenant.clientName.toUpperCase()}'S actual performance data. A "content gap" is not an opportunity by itself — a topic that has search demand AND fits ${tenant.clientName}'s commercial model AND is adjacent to content that's already working IS. Skipping the grounding step produces off-brand topics that waste the operator's time.
 
 Workflow:
 
-### Phase A — Ground in Tarino's actual performance
+### Phase A — Ground in ${tenant.clientName}'s actual performance
 
 A.1  Call query_memory with type='learning' early. Look for retro-* keys — past runs have written findings about what kinds of work moved the needle for this tenant. Use these as priors.
 
@@ -740,7 +754,7 @@ A.2  Call gsc_query_search_analytics with last 28 days, dimensions=['page', 'que
      - Top 20 queries by impressions where position is 4-15 (rankings within striking distance to improve)
      - Themes across high-impression queries (what topics is the audience actually searching for)
 
-A.3  Call framer_list_blog_items. Read the titles + dates. Map each one onto a theme: which topics on the site already have proven traction (from A.2), which were written but didn't pull traffic, what's the editorial range.
+A.3  Call ${cmsListTool}. Read the titles + dates. Map each one onto a theme: which topics on the site already have proven traction (from A.2), which were written but didn't pull traffic, what's the editorial range.
 
 A.4  Form a hypothesis: what topic, IF added to the site, would (a) build on a proven theme from A.2 rather than start a new one, (b) match the existing site's evident commercial lane (look at what existing posts SELL — who would click an outbound CTA?), and (c) target a query cluster with real intent.
 
@@ -752,7 +766,9 @@ If A.1–A.5 produces no candidate that passes, STOP and surface the situation t
 
 ### Phase B — Write the post (only after A passes)
 
-B.1  Call framer_get_changed_paths. If pending changes exist, STOP — surface to operator. Publishing would bundle them.
+${isWebflowCms
+  ? `B.1  (Webflow: no pending-changes check needed — CMS item publishes are item-scoped and do not bundle unrelated site changes.)`
+  : `B.1  Call framer_get_changed_paths. If pending changes exist, STOP — surface to operator. Publishing would bundle them.`}
 
 B.1b Ground the draft in what actually ranks BEFORE writing a word (if Surfer tools are in your toolbelt):
      - Call surfer_content_guidelines with the validated keyword from A.5. Extract the prominent terms, target word-count range, and heading structure. Write the draft AGAINST these from the first pass — the publish gate scores against the same Surfer editor, so drafting blind means discards and wasted runs.
@@ -760,11 +776,13 @@ B.1b Ground the draft in what actually ranks BEFORE writing a word (if Surfer to
 
 B.2  Re-read the 2-3 highest-traffic posts from A.2. They ARE the voice and structure you mirror. Cadence, paragraph length, register, how subheads work, whether posts close with a CTA or a thought. Do not invent a new tone.
 
-B.3  Write the post in full — title + slug + content. Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>. Headline should map to the validated query cluster from A.5.
+B.3  Write the post in full — title + slug + content. ${isWebflowCms
+  ? `Content is standard rich-text HTML for Webflow's body field: <p>, <h2>, <h3>, <strong>, <ul>, <li>, <a>.`
+  : `Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>.`} Headline should map to the validated query cluster from A.5.
 
-B.4  Embed 2-4 internal links to other Tarino posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="/resources/SLUG">descriptive anchor text</a> — anchor text is a real noun phrase from the sentence. Prefer linking to the existing high-traffic posts from A.2 (they're already ranking; pass authority).
+B.4  Embed 2-4 internal links to other ${tenant.clientName} posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="${cmsPrefix}SLUG">descriptive anchor text</a> — anchor text is a real noun phrase from the sentence. Prefer linking to the existing high-traffic posts from A.2 (they're already ranking; pass authority).
 
-B.5  Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject — "australian small business owner laptop", "calculator paperwork desk", "warehouse logistics team". Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — landscape-cropped URL ready for Framer.
+B.5  Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject. Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — landscape-cropped URL ready for the CMS.
 
 ### Phase C — File the pitch
 
@@ -772,7 +790,7 @@ HARD REQUIREMENTS BEFORE FILING (server-side validated — your pitch will be RE
 
 1. toolInput.imageUrl MUST be a non-empty URL. If you have not called pexels_search yet, do it NOW (step B.5). Without a hero image the published page renders broken. NOT optional.
 
-2. toolInput.content MUST contain at least 2 internal links in the form <a href="/resources/SLUG">anchor text</a>. Use slugs from framer_list_blog_items. Anchor text must be a real noun phrase (not 'click here', not the bare title). NOT optional.
+2. toolInput.content MUST contain at least 2 internal links in the form <a href="${cmsPrefix}SLUG">anchor text</a>. Use slugs from ${cmsListTool}. Anchor text must be a real noun phrase (not 'click here', not the bare title). NOT optional.
 
 If you file without these, the system returns PITCH_VALIDATION_FAILED and you have to redo the work. Treat them as preconditions, not nice-to-haves. The operator sees a broken page if you skip them; the validation exists to protect them.
 
@@ -782,19 +800,23 @@ C.1  File propose_action ONCE with:
      (targetKeyword = the validated primary query from A.5 — it drives the Surfer content score AND the cannibalization check, so pass the real keyword, not the title)
      proposedAction = one-line plain-English pitch summary for the operator
      priority       = P0 / P1 / P2 / P3
-     previewUrl     = https://tarino.au/resources/<slug> (will 404 until Stage 2 approve)
+     previewUrl     = https://${cmsDomain}${cmsPrefix}<slug> (will 404 until Stage 2 approve)
      whyPriority    = grounding from Phase A — cite the GSC signal (e.g. "/<existing-page> ranks position 8 for [query] with 1,200 monthly impressions; this new post targets the upstream intent")
 
 C.2  What happens after:${tenant.autonomyLevel === 'full' ? `
      AUTONOMOUS tenant: Stage 1 auto-approves immediately. The executor runs the Surfer quality pipeline (AI-detect → humanize + fact re-verify → content score → one revision pass). Score at/above threshold → Stage 2 auto-approves and the post publishes to the live site. Below threshold or Surfer unavailable → the article is DISCARDED (a 'publish-failed-{slug}' loss memory is written; no draft, no human review). Check query_memory for publish-failed-* entries before picking a topic — a discarded slug means that draft failed the gate; retry with a substantially different angle or a different topic, not the same content. Your draft quality decides whether the post ships in minutes or is thrown away — write it to pass.` : `
-     - Stage 1 approve: executor creates Framer draft + posts Stage 2 card in the same thread.
+     - Stage 1 approve: executor creates ${cmsName} draft + posts Stage 2 card in the same thread.
      - Stage 1 reject: nothing created. No cleanup.
-     - Stage 2 approve: publishes live to tarino.au. Operator reviews the rendered draft in Framer between Stage 1 and Stage 2.
+     - Stage 2 approve: publishes live to ${cmsDomain}. Operator reviews the rendered draft in ${cmsName} between Stage 1 and Stage 2.
      - Stage 2 reject: rollback removes the draft.`}
 
-Critical: do NOT call framer_draft_blog_post yourself. Do NOT use toolName 'framer_create_and_publish_blog_post' (deprecated). The draft creation happens server-side after Stage 1 approve — you only file the pitch.
+Critical: do NOT try to create CMS drafts yourself with read tools, and do NOT use toolName 'framer_create_and_publish_blog_post' (deprecated). The draft creation happens server-side after Stage 1 approve — you only file the pitch.
 
-For non-blog work, pick the right tool from the taxonomy above. Quick reference: marketing page body text → framer_update_marketing_page_text; blog meta → framer_update_blog_meta; blog body → framer_update_blog_body; blog alt text → framer_add_blog_alt_text; blog internal links → framer_add_internal_link; site-wide JSON-LD schema → framer_add_site_schema. ONLY use manual_operator_task when no API tool above applies: marketing-page meta titles/descriptions, robots.txt edits, sitemap.xml direct edits, per-page canonicals or noindex toggles, new marketing pages (design brief), or internal links on marketing pages. When you DO use manual_operator_task, the instruction field must be precise enough that the operator can complete the task in Framer's editor without further input from you.
+For non-blog work, pick the right tool from the taxonomy above. Quick reference: marketing page body text → ${cmsPageText}; blog meta → ${cmsMetaTool}; blog body → ${cmsBodyTool}; blog alt text → ${cmsAltTool}; blog internal links → ${cmsLinkTool}${isWebflowCms
+  ? `; marketing/service page meta → webflow_update_page_meta (API-writable on Webflow — never a manual task)`
+  : `; site-wide JSON-LD schema → framer_add_site_schema`}. ONLY use manual_operator_task when no API tool above applies: ${isWebflowCms
+  ? `robots.txt edits, sitemap.xml direct edits, per-page canonicals or noindex toggles, site-wide custom code/schema, new marketing pages (design brief)`
+  : `marketing-page meta titles/descriptions, robots.txt edits, sitemap.xml direct edits, per-page canonicals or noindex toggles, new marketing pages (design brief), or internal links on marketing pages`}. When you DO use manual_operator_task, the instruction field must be precise enough that the operator can complete the task in ${cmsName}'s editor without further input from you.
 `
     : `# Task mode: PROPOSE CHANGES (can file approvals)
 
@@ -951,11 +973,11 @@ The agent compounds knowledge across runs via tenant_memory. Stable facts about 
 
 ## Before fresh research, check memory
 
-When you would otherwise call web_fetch / analyze_page / framer_list_blog_items to learn something about ${tenant.clientName}, FIRST check if it's in memory:
+When you would otherwise call web_fetch / analyze_page / ${cmsListTool} to learn something about ${tenant.clientName}, FIRST check if it's in memory:
 
 - Brand voice / tone: query_memory({type: 'preference', key: 'brand-voice'}) — if a confident entry exists (confidence ≥ 0.6), USE IT. Skip the /about-page + sample-posts re-fetch. Save ~8-12K tokens.
 - Target audience: query_memory({type: 'fact', key: 'target-audience'}) — use as positioning context. Save ~5K tokens.
-- Internal link map: query_memory({type: 'fact', key: 'link-map-resources'}) — if it has an internal_links array AND was updated in the last 7 days, USE IT instead of framer_list_blog_items. If older than 7 days, refresh by calling framer_list_blog_items and updating the memory entry. Save ~15-25K tokens when fresh.
+- Internal link map: query_memory({type: 'fact', key: 'link-map-resources'}) — if it has an internal_links array AND was updated in the last 7 days, USE IT instead of ${cmsListTool}. If older than 7 days, refresh by calling ${cmsListTool} and updating the memory entry. Save ~15-25K tokens when fresh.
 - Commercial lane: query_memory({type: 'fact', key: 'commercial-lane'}) — what is this business actually selling? Use to filter topic ideas.
 - Constraints: query_memory({type: 'constraint'}) — pull ALL. Honor every one (e.g. "don't pitch cheap-labor angle", "don't fearmonger about local hiring"). Violating a constraint wastes the operator's time on a rejection.
 - Active decisions: query_memory({type: 'decision'}) — pull ALL active strategic decisions (writing length, publishing cadence, structural style).

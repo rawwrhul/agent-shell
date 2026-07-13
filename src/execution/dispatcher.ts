@@ -18,6 +18,17 @@ import {
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
 import {
+  execWebflowConfirmPublish,
+  execWebflowRollbackDraft,
+  execWebflowApproveBlogPitch,
+  execWebflowUpdateBlogMeta,
+  execWebflowUpdateBlogBody,
+  execWebflowAddBlogAltText,
+  execWebflowAddInternalLink,
+  execWebflowUpdatePageMeta,
+  execWebflowUpdateMarketingPageText,
+} from '../integrations/webflow/executor'
+import {
   execAdsAddNegativeKeywords,
   execAdsSetBidModifiers,
   execAdsEditKeywords,
@@ -58,9 +69,25 @@ const HANDLERS: Record<
     execManualOperatorTask(i as unknown as Parameters<typeof execManualOperatorTask>[0], c),
 
   // Phase 8: two-stage approval — agent files approve_blog_pitch.
-  // On approve, executor creates Framer draft + queues Stage 2 (framer_confirm_publish).
+  // CMS-routed: Webflow tenants (integrations includes 'webflow') draft into
+  // the Webflow CMS and queue Stage 2 'webflow_confirm_publish'; everyone
+  // else takes the original Framer path. One tenant has exactly one CMS —
+  // tenantIntegrations gating prevents dispatch ambiguity.
   'approve_blog_pitch':        (i, c) =>
-    execApproveBlogPitch(i as unknown as Parameters<typeof execApproveBlogPitch>[0], c),
+    (Array.isArray(c.tenant.integrations) && c.tenant.integrations.includes('webflow'))
+      ? execWebflowApproveBlogPitch(i as unknown as Parameters<typeof execWebflowApproveBlogPitch>[0], c)
+      : execApproveBlogPitch(i as unknown as Parameters<typeof execApproveBlogPitch>[0], c),
+
+  // Webflow write executors (mirror of the framer_* set; every write is
+  // GET-verified after the fact — Webflow can 200 without persisting).
+  'webflow_confirm_publish':   (i, c) => execWebflowConfirmPublish(i as unknown as Parameters<typeof execWebflowConfirmPublish>[0], c),
+  'webflow_rollback_draft':    (i, c) => execWebflowRollbackDraft(i as unknown as Parameters<typeof execWebflowRollbackDraft>[0], c),
+  'webflow_update_blog_meta':  (i, c) => execWebflowUpdateBlogMeta(i as unknown as Parameters<typeof execWebflowUpdateBlogMeta>[0], c),
+  'webflow_update_blog_body':  (i, c) => execWebflowUpdateBlogBody(i as unknown as Parameters<typeof execWebflowUpdateBlogBody>[0], c),
+  'webflow_add_blog_alt_text': (i, c) => execWebflowAddBlogAltText(i as unknown as Parameters<typeof execWebflowAddBlogAltText>[0], c),
+  'webflow_add_internal_link': (i, c) => execWebflowAddInternalLink(i as unknown as Parameters<typeof execWebflowAddInternalLink>[0], c),
+  'webflow_update_page_meta':  (i, c) => execWebflowUpdatePageMeta(i as unknown as Parameters<typeof execWebflowUpdatePageMeta>[0], c),
+  'webflow_update_marketing_page_text': (i, c) => execWebflowUpdateMarketingPageText(i as unknown as Parameters<typeof execWebflowUpdateMarketingPageText>[0], c),
 
   // P0 single-approval write executors
   'framer_update_blog_meta':   (i, c) =>

@@ -438,7 +438,7 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     }
     if (linkCount < 2) {
       errors.push(
-        `PITCH_VALIDATION_FAILED: toolInput.content has ${linkCount} internal links; you need at least 2. Embed 2-4 <a href="/resources/SLUG">descriptive anchor text</a> elements inside the body, linking to existing Tarino posts from framer_list_blog_items. Internal links are a hard requirement, not optional.`
+        `PITCH_VALIDATION_FAILED: toolInput.content has ${linkCount} internal links; you need at least 2. Embed 2-4 <a href="<cms-prefix>/SLUG">descriptive anchor text</a> elements inside the body, linking to existing posts from the blog-items list tool. Internal links are a hard requirement, not optional.`
       )
     }
     // Cannibalization guard: slug collision, near-duplicate title, and

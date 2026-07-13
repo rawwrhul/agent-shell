@@ -91,6 +91,9 @@ export interface TenantConfig {
   /** Framer project URL, e.g. 'https://framer.com/projects/Sites--aabbccddeeff'. */
   framer_project_url?: string
 
+  /** Webflow site id (Data API v2). Token lives in integration_credentials. */
+  webflow_site_id?: string
+
   /** Autonomy tier. Absent/undefined behaves as 'hitl'. */
   autonomyLevel?: AutonomyLevel
 }
@@ -127,4 +130,5 @@ export interface TenantRow {
   ga4_property_id: string | null
   framer_project_url: string | null
   autonomy_level: AutonomyLevel | null   // tenant-autonomy migration
+  webflow_site_id: string | null         // webflow-tenant migration
 }

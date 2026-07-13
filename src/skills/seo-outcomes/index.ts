@@ -40,14 +40,23 @@ const LOOKBACK_EXTRA_DAYS = 21
 
 // tool_name → how to derive the target path from tool_input.
 // Tools with no single target page (site schema, sitemap, ads) are skipped.
-const NEW_PAGE_TOOLS = new Set(['approve_blog_pitch', 'framer_create_and_publish_blog_post'])
+const NEW_PAGE_TOOLS = new Set([
+  'approve_blog_pitch', 'framer_create_and_publish_blog_post',
+  'framer_confirm_publish', 'webflow_confirm_publish',
+])
 const SLUG_TOOLS = new Set([
   'approve_blog_pitch',
   'framer_create_and_publish_blog_post',
+  'framer_confirm_publish',
   'framer_update_blog_meta',
   'framer_update_blog_body',
   'framer_add_blog_alt_text',
   'framer_add_internal_link',
+  'webflow_confirm_publish',
+  'webflow_update_blog_meta',
+  'webflow_update_blog_body',
+  'webflow_add_blog_alt_text',
+  'webflow_add_internal_link',
 ])
 
 export interface OutcomeCycleResult {
@@ -79,7 +88,9 @@ export function targetPathFor(
     const prefix = cmsPrefix.endsWith('/') ? cmsPrefix : `${cmsPrefix}/`
     return `${prefix}${slug}`
   }
-  if (toolName === 'framer_update_marketing_page_text') {
+  if (toolName === 'framer_update_marketing_page_text'
+    || toolName === 'webflow_update_marketing_page_text'
+    || toolName === 'webflow_update_page_meta') {
     const p = typeof toolInput.pagePath === 'string' ? toolInput.pagePath.trim() : ''
     if (!p || p === '/') return null
     return p.startsWith('/') ? p : `/${p}`

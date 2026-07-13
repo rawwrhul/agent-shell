@@ -48,6 +48,12 @@ export const EDIT_GATE_TOOLS = new Set([
   'framer_add_blog_alt_text',
   'framer_add_internal_link',
   'framer_update_marketing_page_text',
+  'webflow_update_blog_meta',
+  'webflow_update_blog_body',
+  'webflow_add_blog_alt_text',
+  'webflow_add_internal_link',
+  'webflow_update_marketing_page_text',
+  'webflow_update_page_meta',
 ])
 
 // Content-changing tools subject to protect-winners. Alt text and added
@@ -56,6 +62,10 @@ const CONTENT_CHANGE_TOOLS = new Set([
   'framer_update_blog_meta',
   'framer_update_blog_body',
   'framer_update_marketing_page_text',
+  'webflow_update_blog_meta',
+  'webflow_update_blog_body',
+  'webflow_update_marketing_page_text',
+  'webflow_update_page_meta',
 ])
 
 export interface EditGateInput {
@@ -78,7 +88,7 @@ export function targetPathOf(toolName: string, toolInput: Record<string, unknown
 export function inputBoundErrors(toolName: string, toolInput: Record<string, unknown>): string[] {
   const errors: string[] = []
 
-  if (toolName === 'framer_update_blog_meta') {
+  if (toolName.endsWith('_update_blog_meta') || toolName === 'webflow_update_page_meta') {
     const t = typeof toolInput.newTitle === 'string' ? toolInput.newTitle.trim() : ''
     const d = typeof toolInput.newDescription === 'string' ? toolInput.newDescription.trim() : ''
     if (t && (t.length < TITLE_MIN || t.length > TITLE_MAX)) {
@@ -93,7 +103,7 @@ export function inputBoundErrors(toolName: string, toolInput: Record<string, unk
     }
   }
 
-  if (toolName === 'framer_add_internal_link') {
+  if (toolName.endsWith('_add_internal_link')) {
     const anchor = typeof toolInput.sourceText === 'string' ? toolInput.sourceText.trim().toLowerCase() : ''
     if (anchor && GENERIC_ANCHORS.has(anchor)) {
       errors.push(
@@ -111,7 +121,8 @@ export async function checkEditGates(pool: Pool, input: EditGateInput): Promise<
   const path = targetPathOf(input.toolName, input.toolInput, input.cmsPrefix)
 
   // Duplicate title site-wide.
-  const newTitle = input.toolName === 'framer_update_blog_meta' && typeof input.toolInput.newTitle === 'string'
+  const newTitle = (input.toolName.endsWith('_update_blog_meta') || input.toolName === 'webflow_update_page_meta')
+    && typeof input.toolInput.newTitle === 'string'
     ? input.toolInput.newTitle.trim() : ''
   if (newTitle) {
     try {
@@ -136,7 +147,7 @@ export async function checkEditGates(pool: Pool, input: EditGateInput): Promise<
   }
 
   // Link target must exist (only when we have inventory to check against).
-  if (input.toolName === 'framer_add_internal_link') {
+  if (input.toolName.endsWith('_add_internal_link')) {
     const target = typeof input.toolInput.targetUrl === 'string' ? input.toolInput.targetUrl.trim() : ''
     if (target) {
       try {
