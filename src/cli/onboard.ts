@@ -22,7 +22,7 @@ import { config } from '../config'
 const secrets = new SecretManagerServiceClient()
 const io = rl.createInterface({ input, output })
 
-const ALLOWED_INTEGRATIONS = ['framer', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer']
+const ALLOWED_INTEGRATIONS = ['framer', 'webflow', 'gsc', 'ga4', 'dataforseo', 'pexels', 'ahrefs', 'surfer', 'googleads']
 
 async function ask(q: string, fallback?: string): Promise<string> {
   const answer = (await io.question(q)).trim()
@@ -82,9 +82,17 @@ async function main() {
     [`${tenantId}-slack-app-token`]:      slackAppToken,
     [`${tenantId}-slack-signing-secret`]: slackSigningSecret,
   }
+  // Best-effort: secrets are often pre-created via gcloud (and Node ADC can
+  // fail where the gcloud CLI works). A failure here must not abort tenant
+  // registration — just verify the secrets exist afterwards:
+  //   gcloud secrets versions access latest --secret=<tenant>-slack-bot-token
   for (const [id, val] of Object.entries(secretMap)) {
-    await storeSecret(id, val)
-    console.log(`  ✅ ${id}`)
+    try {
+      await storeSecret(id, val)
+      console.log(`  ✅ ${id}`)
+    } catch (err) {
+      console.warn(`  ⚠️ ${id}: store failed (${String(err).slice(0, 120)}). If this secret already exists with the right value, ignore; otherwise create it via gcloud before first run.`)
+    }
   }
 
   console.log('\n📝 Registering tenant in database…')
