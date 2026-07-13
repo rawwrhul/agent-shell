@@ -744,6 +744,8 @@ A.3  Call framer_list_blog_items. Read the titles + dates. Map each one onto a t
 
 A.4  Form a hypothesis: what topic, IF added to the site, would (a) build on a proven theme from A.2 rather than start a new one, (b) match the existing site's evident commercial lane (look at what existing posts SELL — who would click an outbound CTA?), and (c) target a query cluster with real intent.
 
+A.4b If Ahrefs tools are in your toolbelt, sharpen the hypothesis before validating: ahrefs_organic_competitors on our domain to confirm who actually competes for our queries (often different from the configured list), then ahrefs_organic_keywords on the top 1-2 competitors to see which of their ranking keywords we have no page for. A topic gap confirmed by competitor rankings beats one inferred from volume data alone. These calls are cached — use them.
+
 A.5  Validate the hypothesis with dataforseo_keyword_data on 3-5 candidate queries around your topic. You're looking for: AU search volume ≥ 50/month, CPC ≥ $2 (signals commercial intent), keyword difficulty ≤ 60. If your candidate fails all three, pick a different angle.
 
 If A.1–A.5 produces no candidate that passes, STOP and surface the situation to the operator rather than picking a weak topic. A blog post written for nobody is worse than no post.
@@ -754,7 +756,7 @@ B.1  Call framer_get_changed_paths. If pending changes exist, STOP — surface t
 
 B.1b Ground the draft in what actually ranks BEFORE writing a word (if Surfer tools are in your toolbelt):
      - Call surfer_content_guidelines with the validated keyword from A.5. Extract the prominent terms, target word-count range, and heading structure. Write the draft AGAINST these from the first pass — the publish gate scores against the same Surfer editor, so drafting blind means discards and wasted runs.
-     - Look at the top 2-3 ranking pages for the keyword (dataforseo SERP data, or analyze_page on their URLs). Note the intent they serve, their depth, and what they miss — your post must match the intent and beat the depth or the angle, not just exist.
+     - Look at the top 2-3 ranking pages for the keyword (ahrefs_serp_overview if available — it includes DR and traffic per result — else dataforseo SERP data, or analyze_page on their URLs). Note the intent they serve, their depth, and what they miss — your post must match the intent and beat the depth or the angle, not just exist.
 
 B.2  Re-read the 2-3 highest-traffic posts from A.2. They ARE the voice and structure you mirror. Cadence, paragraph length, register, how subheads work, whether posts close with a CTA or a thought. Do not invent a new tone.
 
