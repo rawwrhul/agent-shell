@@ -40,6 +40,29 @@ import type { TaskTrigger } from '../types';
 
 let _worker: Worker<ScheduledRunPayload> | null = null;
 
+// HARD CAP on every direct cycle (crawls, API sweeps). Learned 2026-07-14:
+// two seo_audit crawls hung indefinitely, lost their locks, zombie-occupied
+// the worker's 4 concurrency slots and starved the ENTIRE schedule queue —
+// no tenant ran anything for hours. A cycle that exceeds the cap fails the
+// job (freeing the slot) and retries on its next cron slot. The underlying
+// promise can't be cancelled and may linger until instance recycle — that's
+// acceptable; a wedged queue is not.
+const CYCLE_TIMEOUT_MS = 30 * 60_000;
+
+function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      const t = setTimeout(
+        () => reject(new Error(`cycle_timeout: ${label} exceeded ${CYCLE_TIMEOUT_MS / 60000}min cap`)),
+        CYCLE_TIMEOUT_MS,
+      );
+      // Don't keep the process alive just for this timer.
+      if (typeof t.unref === 'function') t.unref();
+    }),
+  ]);
+}
+
 export function startScheduleWorker(): Worker<ScheduledRunPayload> {
   if (_worker) return _worker;
 
@@ -102,7 +125,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'metrics_sync') {
     const { runMetricsSyncCycle } = await import('../core/metrics/sync');
     try {
-      await runMetricsSyncCycle(tenantId);
+      await withTimeout(runMetricsSyncCycle(tenantId), 'metrics_sync');
     } catch (err) {
       logger.error('metrics_sync_cycle_failed', { tenantId, err: String(err).slice(0, 400) });
     }
@@ -116,7 +139,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'seo_audit') {
     logger.info('seo_audit_cycle_starting', { tenantId });
     try {
-      await runFullAuditCycle(tenantId);
+      await withTimeout(runFullAuditCycle(tenantId), 'seo_audit');
       logger.info('seo_audit_cycle_completed', { tenantId });
     } catch (err) {
       logger.error('seo_audit_cycle_failed', {
@@ -132,7 +155,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'backlink_prospect') {
     logger.info('backlink_prospect_cycle_starting_from_worker', { tenantId });
     try {
-      await runBacklinkProspectCycle(tenantId);
+      await withTimeout(runBacklinkProspectCycle(tenantId), 'backlink_prospect');
       logger.info('backlink_prospect_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('backlink_prospect_cycle_failed_from_worker', {
@@ -146,7 +169,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'brand_mention_scan') {
     logger.info('brand_mention_scan_cycle_starting_from_worker', { tenantId });
     try {
-      await runBrandMentionScanCycle(tenantId);
+      await withTimeout(runBrandMentionScanCycle(tenantId), 'brand_mention_scan');
       logger.info('brand_mention_scan_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('brand_mention_scan_cycle_failed_from_worker', {
@@ -163,7 +186,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'strategy_refresh') {
     logger.info('strategy_refresh_cycle_starting_from_worker', { tenantId });
     try {
-      await runStrategyRefreshCycle(tenantId);
+      await withTimeout(runStrategyRefreshCycle(tenantId), 'strategy_refresh');
       logger.info('strategy_refresh_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('strategy_refresh_cycle_failed_from_worker', {
@@ -179,7 +202,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'metadata_edit') {
     logger.info('metadata_edit_cycle_starting_from_worker', { tenantId });
     try {
-      const r = await runMetadataEditCycle(tenantId);
+      const r = await withTimeout(runMetadataEditCycle(tenantId), 'metadata_edit');
       logger.info('metadata_edit_cycle_completed_from_worker', {
         tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
       });
@@ -197,7 +220,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'copy_optimise') {
     logger.info('copy_optimise_cycle_starting_from_worker', { tenantId });
     try {
-      const r = await runCopyOptimiseCycle(tenantId);
+      const r = await withTimeout(runCopyOptimiseCycle(tenantId), 'copy_optimise');
       logger.info('copy_optimise_cycle_completed_from_worker', {
         tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
       });
@@ -215,7 +238,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'internal_link') {
     logger.info('internal_link_cycle_starting_from_worker', { tenantId });
     try {
-      const r = await runInternalLinkCycle(tenantId);
+      const r = await withTimeout(runInternalLinkCycle(tenantId), 'internal_link');
       logger.info('internal_link_cycle_completed_from_worker', {
         tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
       });
@@ -235,7 +258,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     logger.info('outcome_score_cycle_starting_from_worker', { tenantId });
     try {
       const { runOutcomeScoreCycle } = await import('../skills/seo-outcomes');
-      const r = await runOutcomeScoreCycle(tenantId);
+      const r = await withTimeout(runOutcomeScoreCycle(tenantId), 'outcome_score');
       logger.info('outcome_score_cycle_completed_from_worker', {
         tenantId, scanned: r.scanned, scored: r.scored,
         wins: r.wins, losses: r.losses, neutral: r.neutral,
@@ -256,7 +279,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
     logger.info('daily_digest_cycle_starting_from_worker', { tenantId });
     try {
       const { runDailyDigestCycle } = await import('../skills/daily-digest');
-      const r = await runDailyDigestCycle(tenantId);
+      const r = await withTimeout(runDailyDigestCycle(tenantId), 'daily_digest');
       logger.info('daily_digest_cycle_completed_from_worker', {
         tenantId, digestDate: r.digestDate, actions: r.actions,
         articles: r.articles, written: r.written,
@@ -275,7 +298,7 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
   if (runKind === 'article_create') {
     logger.info('article_create_cycle_starting_from_worker', { tenantId });
     try {
-      const r = await runArticleCreateCycle(tenantId);
+      const r = await withTimeout(runArticleCreateCycle(tenantId), 'article_create');
       logger.info('article_create_cycle_completed_from_worker', {
         tenantId, candidates: r.candidates, filed: r.filed, skipped: r.skipped,
       });
