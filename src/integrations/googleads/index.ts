@@ -9,6 +9,22 @@ export { BidModifiersInputSchema, buildBidModifierOps, MODIFIER_MIN, MODIFIER_MA
 export type { BidModifiersInput, ExistingModifiers } from './bid-modifiers'
 export { KeywordEditsInputSchema, buildKeywordEditOps, CPC_MIN, CPC_MAX } from './keyword-edits'
 export type { KeywordEditsInput } from './keyword-edits'
+export {
+  execAdsChangeBids, execAdsChangeBudget, execAdsAddKeywords,
+  execAdsCreateAdGroup, execAdsCreateCampaign, execAdsUpdateAdCopy,
+} from './executor'
+export { BidChangeInputSchema, relativeStep, buildCampaignTargetOp, buildAdGroupCpcOp, MAX_RELATIVE_BID_STEP } from './bid-changes'
+export type { BidChangeInput, CampaignTargetKind } from './bid-changes'
+export { BudgetChangeInputSchema, diagnoseBudgetIncrease, buildBudgetUpdateOp, MAX_RELATIVE_BUDGET_STEP, BUDGET_LOST_IS_FLOOR } from './budget-changes'
+export type { BudgetChangeInput, BudgetIncreaseDiagnosis } from './budget-changes'
+export {
+  AddKeywordsInputSchema, buildAddKeywordOps,
+  CreateAdGroupInputSchema, buildCreateAdGroupOps,
+  CreateCampaignInputSchema, buildCreateCampaignOps,
+} from './expansion'
+export type { AddKeywordsInput, CreateAdGroupInput, CreateCampaignInput } from './expansion'
+export { AdCopyInputSchema, buildCreateRsaOp, buildPauseAdOp } from './ad-copy'
+export type { AdCopyInput } from './ad-copy'
 export { forTenant, listAccessibleCustomers, TenantAdsClient } from './client'
 export { resolveSharedCreds, resolveTenantConfig } from './auth'
 export { withBackoff, isRetryable } from './retry'

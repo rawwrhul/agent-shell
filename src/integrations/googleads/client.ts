@@ -94,6 +94,47 @@ export async function forTenant(tenantId: string): Promise<TenantAdsClient> {
   return wrapped
 }
 
+export interface CustomerProbe {
+  id:           string
+  name:         string | null
+  currency:     string | null
+  isManager:    boolean
+  isTestAccount: boolean
+}
+
+/**
+ * MCC-level: read one customer row for a CID WITHOUT requiring the tenant
+ * secret to exist yet. Used by ads:link to refuse manager accounts BEFORE
+ * anything is stored - the agent operates a single client account, never a
+ * manager (mutations against a manager CID fail, and a manager-of-managers
+ * hides the real spend surface).
+ */
+export async function probeCustomer(cid: string): Promise<CustomerProbe> {
+  const [client, shared] = await Promise.all([api(), resolveSharedCreds()])
+  const customer = client.Customer({
+    customer_id:       cid,
+    login_customer_id: _loginCustomerId ?? shared.loginCustomerId,
+    refresh_token:     shared.refreshToken,
+  })
+  const rows = await withBackoff(
+    () => customer.query(`
+      SELECT customer.id, customer.descriptive_name, customer.currency_code,
+             customer.manager, customer.test_account
+      FROM customer
+      LIMIT 1`),
+    { label: 'probe_customer' },
+  )
+  const c = (rows as { customer?: { id?: unknown; descriptive_name?: unknown; currency_code?: unknown; manager?: unknown; test_account?: unknown } }[])[0]?.customer
+  if (!c?.id) throw new Error(`Probe returned no customer row for CID ${cid}`)
+  return {
+    id:            String(c.id),
+    name:          c.descriptive_name != null ? String(c.descriptive_name) : null,
+    currency:      c.currency_code != null ? String(c.currency_code) : null,
+    isManager:     !!c.manager,
+    isTestAccount: !!c.test_account,
+  }
+}
+
 /** MCC-level: list customer ids accessible to the refresh token. Used by ads:link and the smoke test. */
 export async function listAccessibleCustomers(): Promise<string[]> {
   const shared = await resolveSharedCreds()

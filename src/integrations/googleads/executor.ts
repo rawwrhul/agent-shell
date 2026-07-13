@@ -22,6 +22,51 @@ import {
 } from './negatives'
 import { BidModifiersInputSchema, buildBidModifierOps, type ExistingModifiers, type DeviceNameT } from './bid-modifiers'
 import { KeywordEditsInputSchema, buildKeywordEditOps, type KeywordEdit } from './keyword-edits'
+import { fromMicros } from 'google-ads-api'
+import {
+  BidChangeInputSchema, relativeStep, buildCampaignTargetOp, buildAdGroupCpcOp,
+  MAX_RELATIVE_BID_STEP, type CampaignTargetKind,
+} from './bid-changes'
+import {
+  BudgetChangeInputSchema, diagnoseBudgetIncrease, buildBudgetUpdateOp,
+  MAX_RELATIVE_BUDGET_STEP, BUDGET_LOST_IS_FLOOR,
+} from './budget-changes'
+import {
+  AddKeywordsInputSchema, buildAddKeywordOps, dedupePositiveKeywords,
+  CreateAdGroupInputSchema, buildCreateAdGroupOps,
+  CreateCampaignInputSchema, buildCreateCampaignOps,
+} from './expansion'
+import { AdCopyInputSchema, buildCreateRsaOp, buildPauseAdOp } from './ad-copy'
+
+/** Uniform "not on the HITL execution path" refusal. */
+function blockedNoApproval(): ExecutionResult {
+  return {
+    ok: false,
+    summary: 'Blocked: ads mutations require the HITL execution path (no approvalId in context).',
+    error:   'missing_approval_id',
+  }
+}
+
+/** Uniform zod failure -> terminal ExecutionResult. */
+function validationFailure(label: string, error: { issues: { path: (string | number)[]; message: string }[] }): ExecutionResult {
+  const msg = error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+  return {
+    ok: false,
+    summary: `${label} proposal failed validation: ${msg}`,
+    error:   `validation_failed: ${msg}`,
+  }
+}
+
+/** Escape a string for use inside a single-quoted GAQL literal. */
+function gaqlEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
+/** Normalise an API enum (number or string) to its string name. */
+function enumName(e: Record<string | number, string | number>, v: unknown): string {
+  if (typeof v === 'number') return String(e[v] ?? v)
+  return String(v ?? '')
+}
 
 export async function execAdsAddNegativeKeywords(
   input: Record<string, unknown>,
@@ -346,4 +391,584 @@ function deviceName(v: unknown): DeviceNameT | null {
   if (v === 4 || v === 'DESKTOP') return 'DESKTOP'
   if (v === 3 || v === 'TABLET')  return 'TABLET'
   return null
+}
+
+// ── Chunk 1d: bid changes (tCPA / tROAS / ad group CPC) ─────────────────
+
+export async function execAdsChangeBids(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = BidChangeInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Bid change', parsed.error)
+  const bc = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  if (bc.field === 'ad_group_cpc') {
+    const rows = await client.query(`
+      SELECT ad_group.id, ad_group.status, ad_group.cpc_bid_micros,
+             campaign.bidding_strategy_type
+      FROM ad_group
+      WHERE ad_group.id = ${bc.ad_group_id} AND campaign.id = ${bc.campaign_id}`, 'bid_change_preread')
+    const row = rows[0]
+    if (!row?.ad_group?.id) {
+      return {
+        ok: false,
+        summary: `Ad group ${bc.ad_group_id} not found on campaign ${bc.campaign_id}.`,
+        error:   'ad_group_not_found',
+      }
+    }
+    const strategy = enumName(enums.BiddingStrategyType, row.campaign?.bidding_strategy_type)
+    if (strategy !== 'MANUAL_CPC') {
+      return {
+        ok: false,
+        summary: `Refused: campaign ${bc.campaign_id} bidding strategy is ${strategy || 'unknown'} - ad group CPC only applies on MANUAL_CPC campaigns. Propose the matching target change instead.`,
+        error:   'wrong_lever_not_manual_cpc',
+      }
+    }
+
+    const currentMicros = Number(row.ad_group.cpc_bid_micros ?? 0)
+    const current = currentMicros > 0 ? fromMicros(currentMicros) : null
+    if (current != null) {
+      const step = relativeStep(current, bc.new_cpc)
+      if (step > MAX_RELATIVE_BID_STEP) {
+        return {
+          ok: false,
+          summary: `Refused: CPC move ${current} -> ${bc.new_cpc} is a ${Math.round(step * 100)}% step; the cap is ${MAX_RELATIVE_BID_STEP * 100}% per approval. Propose an intermediate value and step again in a few days.`,
+          error:   'step_cap_exceeded',
+        }
+      }
+    }
+
+    const res = await client.mutate([buildAdGroupCpcOp(client.customerId, bc.ad_group_id, bc.new_cpc)],
+      { approvalId: ctx.approvalId, label: 'change_bids' })
+    const resourceNames = (res.mutate_operation_responses ?? [])
+      .map((r) => r.ad_group_result?.resource_name)
+      .filter((x): x is string => !!x)
+
+    logger.info('ads_bid_change_shipped', {
+      tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+      field: bc.field, campaignId: bc.campaign_id, adGroupId: bc.ad_group_id,
+      previous: current, next: bc.new_cpc,
+    })
+    const fromPart = current != null ? `${current} -> ` : '(no prior default bid) -> '
+    return {
+      ok: true,
+      summary: `Set ad group ${bc.ad_group_id} default CPC ${fromPart}${bc.new_cpc} via the Google Ads API.`,
+      detail: {
+        field: bc.field, campaign_id: bc.campaign_id, ad_group_id: bc.ad_group_id,
+        previous: current, next: bc.new_cpc, resource_names: resourceNames,
+        rationale: bc.rationale ?? null,
+      },
+    }
+  }
+
+  // Campaign-level target move (tCPA or tROAS).
+  const rows = await client.query(`
+    SELECT campaign.id, campaign.status, campaign.bidding_strategy,
+           campaign.bidding_strategy_type,
+           campaign.target_cpa.target_cpa_micros,
+           campaign.maximize_conversions.target_cpa_micros,
+           campaign.target_roas.target_roas,
+           campaign.maximize_conversion_value.target_roas
+    FROM campaign
+    WHERE campaign.id = ${bc.campaign_id}`, 'bid_change_preread')
+  const row = rows[0]
+  if (!row?.campaign?.id) {
+    return { ok: false, summary: `Campaign ${bc.campaign_id} not found.`, error: 'campaign_not_found' }
+  }
+  const c = row.campaign
+  if (enumName(enums.CampaignStatus, c.status) === 'REMOVED') {
+    return { ok: false, summary: `Campaign ${bc.campaign_id} is removed.`, error: 'campaign_removed' }
+  }
+  if (c.bidding_strategy) {
+    return {
+      ok: false,
+      summary: `Refused: campaign ${bc.campaign_id} uses portfolio bidding strategy ${String(c.bidding_strategy)} - moving it would affect every attached campaign. Flag as a manual operator task.`,
+      error:   'portfolio_strategy',
+    }
+  }
+
+  const strategy = enumName(enums.BiddingStrategyType, c.bidding_strategy_type)
+  let kind: CampaignTargetKind
+  let current: number | null
+
+  if (bc.field === 'target_cpa') {
+    if (strategy === 'TARGET_CPA') {
+      kind = 'target_cpa'
+      const micros = Number(c.target_cpa?.target_cpa_micros ?? 0)
+      current = micros > 0 ? fromMicros(micros) : null
+    } else if (strategy === 'MAXIMIZE_CONVERSIONS') {
+      const micros = Number(c.maximize_conversions?.target_cpa_micros ?? 0)
+      if (micros <= 0) {
+        return {
+          ok: false,
+          summary: `Refused: campaign ${bc.campaign_id} runs targetless MAXIMIZE_CONVERSIONS - there is no tCPA to move. Route aggression to ads_change_budget instead.`,
+          error:   'targetless_strategy',
+        }
+      }
+      kind = 'maximize_conversions_with_tcpa'
+      current = fromMicros(micros)
+    } else {
+      return {
+        ok: false,
+        summary: `Refused: campaign ${bc.campaign_id} bidding strategy is ${strategy || 'unknown'} - target_cpa does not apply. Read the campaign first and propose the matching field.`,
+        error:   'strategy_mismatch',
+      }
+    }
+  } else {
+    if (strategy === 'TARGET_ROAS') {
+      kind = 'target_roas'
+      const v = Number(c.target_roas?.target_roas ?? 0)
+      current = v > 0 ? v : null
+    } else if (strategy === 'MAXIMIZE_CONVERSION_VALUE') {
+      const v = Number(c.maximize_conversion_value?.target_roas ?? 0)
+      if (v <= 0) {
+        return {
+          ok: false,
+          summary: `Refused: campaign ${bc.campaign_id} runs targetless MAXIMIZE_CONVERSION_VALUE - there is no tROAS to move. Route aggression to ads_change_budget instead.`,
+          error:   'targetless_strategy',
+        }
+      }
+      kind = 'maximize_conversion_value_with_troas'
+      current = v
+    } else {
+      return {
+        ok: false,
+        summary: `Refused: campaign ${bc.campaign_id} bidding strategy is ${strategy || 'unknown'} - target_roas does not apply. Read the campaign first and propose the matching field.`,
+        error:   'strategy_mismatch',
+      }
+    }
+  }
+
+  if (current == null) {
+    return {
+      ok: false,
+      summary: `Refused: campaign ${bc.campaign_id} has no current ${bc.field} to step from. Set the initial target in the Google Ads UI (manual operator task).`,
+      error:   'no_baseline_target',
+    }
+  }
+
+  const step = relativeStep(current, bc.new_target)
+  if (step > MAX_RELATIVE_BID_STEP) {
+    return {
+      ok: false,
+      summary: `Refused: ${bc.field} move ${current} -> ${bc.new_target} is a ${Math.round(step * 100)}% step; the cap is ${MAX_RELATIVE_BID_STEP * 100}% per approval. Propose an intermediate value and step again in a few days.`,
+      error:   'step_cap_exceeded',
+    }
+  }
+
+  const res = await client.mutate([buildCampaignTargetOp(client.customerId, bc.campaign_id, kind, bc.new_target)],
+    { approvalId: ctx.approvalId, label: 'change_bids' })
+  const resourceNames = (res.mutate_operation_responses ?? [])
+    .map((r) => r.campaign_result?.resource_name)
+    .filter((x): x is string => !!x)
+
+  logger.info('ads_bid_change_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    field: bc.field, campaignId: bc.campaign_id, strategy, kind,
+    previous: current, next: bc.new_target,
+  })
+  return {
+    ok: true,
+    summary: `Moved ${bc.field} on campaign ${bc.campaign_id} (${strategy}): ${current} -> ${bc.new_target} via the Google Ads API.`,
+    detail: {
+      field: bc.field, campaign_id: bc.campaign_id, strategy, target_kind: kind,
+      previous: current, next: bc.new_target, resource_names: resourceNames,
+      rationale: bc.rationale ?? null,
+    },
+  }
+}
+
+// ── Chunk 1d: campaign daily budget ─────────────────────────────────────
+
+export async function execAdsChangeBudget(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = BudgetChangeInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Budget change', parsed.error)
+  const bch = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  const rows = await client.query(`
+    SELECT campaign.id, campaign.status,
+           campaign_budget.resource_name, campaign_budget.amount_micros,
+           campaign_budget.explicitly_shared
+    FROM campaign
+    WHERE campaign.id = ${bch.campaign_id}`, 'budget_change_preread')
+  const row = rows[0]
+  if (!row?.campaign?.id || !row.campaign_budget?.resource_name) {
+    return { ok: false, summary: `Campaign ${bch.campaign_id} (or its budget) not found.`, error: 'campaign_not_found' }
+  }
+  if (enumName(enums.CampaignStatus, row.campaign.status) === 'REMOVED') {
+    return { ok: false, summary: `Campaign ${bch.campaign_id} is removed.`, error: 'campaign_removed' }
+  }
+  if (row.campaign_budget.explicitly_shared) {
+    return {
+      ok: false,
+      summary: `Refused: campaign ${bch.campaign_id} uses a SHARED budget - changing it changes every attached campaign. Flag as a manual operator task.`,
+      error:   'shared_budget',
+    }
+  }
+
+  const current = fromMicros(Number(row.campaign_budget.amount_micros ?? 0))
+  if (!(current > 0)) {
+    return { ok: false, summary: `Campaign ${bch.campaign_id} has no readable current budget.`, error: 'no_baseline_budget' }
+  }
+
+  const step = relativeStep(current, bch.new_daily_budget)
+  if (step > MAX_RELATIVE_BUDGET_STEP) {
+    return {
+      ok: false,
+      summary: `Refused: budget move ${current} -> ${bch.new_daily_budget} is a ${Math.round(step * 100)}% step; the cap is ${MAX_RELATIVE_BUDGET_STEP * 100}% per approval. Propose an intermediate value.`,
+      error:   'step_cap_exceeded',
+    }
+  }
+
+  const isIncrease = bch.new_daily_budget > current
+  let budgetLostIs = 0
+  let rankLostIs = 0
+  if (isIncrease) {
+    const mrows = await client.query(`
+      SELECT metrics.search_budget_lost_impression_share,
+             metrics.search_rank_lost_impression_share
+      FROM campaign
+      WHERE campaign.id = ${bch.campaign_id} AND segments.date DURING LAST_30_DAYS`, 'budget_change_is_read')
+    const m = mrows[0]?.metrics
+    budgetLostIs = Number(m?.search_budget_lost_impression_share ?? 0)
+    rankLostIs   = Number(m?.search_rank_lost_impression_share ?? 0)
+
+    const diagnosis = diagnoseBudgetIncrease(budgetLostIs, rankLostIs)
+    if (diagnosis === 'rank_dominant') {
+      return {
+        ok: false,
+        summary: `Refused: lost impression share is rank-dominant (rank ${Math.round(rankLostIs * 100)}% vs budget ${Math.round(budgetLostIs * 100)}%) - budget is the wrong lever. Propose ads_change_bids instead.`,
+        error:   'rank_dominant_is_loss',
+      }
+    }
+    if (diagnosis === 'no_lost_is') {
+      return {
+        ok: false,
+        summary: `Refused: budget-lost impression share is ${Math.round(budgetLostIs * 100)}% (floor ${BUDGET_LOST_IS_FLOOR * 100}%) - the campaign is not budget-constrained. Hold.`,
+        error:   'not_budget_constrained',
+      }
+    }
+  }
+
+  const res = await client.mutate([buildBudgetUpdateOp(String(row.campaign_budget.resource_name), bch.new_daily_budget)],
+    { approvalId: ctx.approvalId, label: 'change_budget' })
+  const resourceNames = (res.mutate_operation_responses ?? [])
+    .map((r) => r.campaign_budget_result?.resource_name)
+    .filter((x): x is string => !!x)
+
+  logger.info('ads_budget_change_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    campaignId: bch.campaign_id, previous: current, next: bch.new_daily_budget,
+    isIncrease, budgetLostIs, rankLostIs,
+  })
+  const isPart = isIncrease
+    ? ` (30-day IS lost to budget ${Math.round(budgetLostIs * 100)}%, to rank ${Math.round(rankLostIs * 100)}%)`
+    : ''
+  return {
+    ok: true,
+    summary: `Changed campaign ${bch.campaign_id} daily budget ${current} -> ${bch.new_daily_budget} via the Google Ads API.${isPart}`,
+    detail: {
+      campaign_id: bch.campaign_id, previous: current, next: bch.new_daily_budget,
+      is_increase: isIncrease, budget_lost_is: budgetLostIs, rank_lost_is: rankLostIs,
+      resource_names: resourceNames, rationale: bch.rationale ?? null,
+    },
+  }
+}
+
+// ── Chunk 1e: add positive keywords to an existing ad group ─────────────
+
+export async function execAdsAddKeywords(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = AddKeywordsInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Add keywords', parsed.error)
+  const ak = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  const agRows = await client.query(`
+    SELECT ad_group.id, ad_group.status, campaign.bidding_strategy_type
+    FROM ad_group
+    WHERE ad_group.id = ${ak.ad_group_id} AND campaign.id = ${ak.campaign_id}`, 'add_keywords_preread')
+  if (!agRows[0]?.ad_group?.id) {
+    return { ok: false, summary: `Ad group ${ak.ad_group_id} not found on campaign ${ak.campaign_id}.`, error: 'ad_group_not_found' }
+  }
+  const strategy = enumName(enums.BiddingStrategyType, agRows[0].campaign?.bidding_strategy_type)
+
+  // Idempotent re-approval: skip keywords already live on the ad group.
+  const existing = new Set<string>()
+  try {
+    const rows = await client.query(`
+      SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type
+      FROM ad_group_criterion
+      WHERE ad_group.id = ${ak.ad_group_id}
+        AND ad_group_criterion.type = 'KEYWORD'
+        AND ad_group_criterion.negative = FALSE
+        AND ad_group_criterion.status != 'REMOVED'`, 'add_keywords_dedupe')
+    for (const r of rows) {
+      const kw = r.ad_group_criterion?.keyword
+      if (kw?.text) existing.add(`${matchTypeName(kw.match_type)}:${kw.text.toLowerCase()}`)
+    }
+  } catch (err) {
+    logger.warn('ads_add_keywords_dedupe_read_failed', {
+      tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+      err: String(err).slice(0, 200),
+      hint: 'Proceeding without dedupe; a true duplicate will surface as a permanent API error.',
+    })
+  }
+
+  const proposed = dedupePositiveKeywords(ak.keywords)
+  const shipped = proposed.filter((k) => !existing.has(`${k.match_type}:${k.text.toLowerCase()}`))
+  const skipped = proposed.length - shipped.length
+
+  if (shipped.length === 0) {
+    return {
+      ok: true,
+      summary: `All ${proposed.length} proposed keyword(s) already exist on ad group ${ak.ad_group_id} - nothing to add.`,
+      detail: {
+        campaign_id: ak.campaign_id, ad_group_id: ak.ad_group_id,
+        keywords: [], skipped_existing: skipped, resource_names: [], rationale: ak.rationale ?? null,
+      },
+    }
+  }
+
+  const ops = buildAddKeywordOps(client.customerId, ak, shipped)
+  const res = await client.mutate(ops, { approvalId: ctx.approvalId, label: 'add_keywords' })
+  const resourceNames = (res.mutate_operation_responses ?? [])
+    .map((r) => r.ad_group_criterion_result?.resource_name)
+    .filter((x): x is string => !!x)
+
+  const cpcOnSmartBidding = shipped.some((k) => k.cpc != null) && strategy !== 'MANUAL_CPC'
+
+  logger.info('ads_add_keywords_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    campaignId: ak.campaign_id, adGroupId: ak.ad_group_id,
+    count: shipped.length, skipped, cpcOnSmartBidding,
+  })
+  const skippedPart = skipped ? ` (${skipped} already existed, skipped)` : ''
+  const warnPart = cpcOnSmartBidding
+    ? ` WARNING: campaign bidding strategy is ${strategy || 'not MANUAL_CPC'} - keyword CPC bids are stored but ignored under Smart Bidding.`
+    : ''
+  return {
+    ok: true,
+    summary: `Added ${shipped.length} keyword${shipped.length === 1 ? '' : 's'} to ad group ${ak.ad_group_id} via the Google Ads API.${skippedPart}${warnPart}`,
+    detail: {
+      campaign_id: ak.campaign_id, ad_group_id: ak.ad_group_id,
+      keywords: shipped.map((k) => ({ text: k.text, match_type: k.match_type, cpc: k.cpc ?? null })),
+      skipped_existing: skipped, cpc_on_smart_bidding: cpcOnSmartBidding,
+      resource_names: resourceNames, rationale: ak.rationale ?? null,
+    },
+  }
+}
+
+// ── Chunk 1e: create ad group (PAUSED) ──────────────────────────────────
+
+export async function execAdsCreateAdGroup(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = CreateAdGroupInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Create ad group', parsed.error)
+  const cg = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  const cRows = await client.query(`
+    SELECT campaign.id, campaign.status
+    FROM campaign
+    WHERE campaign.id = ${cg.campaign_id}`, 'create_ad_group_preread')
+  if (!cRows[0]?.campaign?.id) {
+    return { ok: false, summary: `Campaign ${cg.campaign_id} not found.`, error: 'campaign_not_found' }
+  }
+  if (enumName(enums.CampaignStatus, cRows[0].campaign.status) === 'REMOVED') {
+    return { ok: false, summary: `Campaign ${cg.campaign_id} is removed.`, error: 'campaign_removed' }
+  }
+
+  // Idempotent re-approval: same-name ad group already on the campaign.
+  const dupRows = await client.query(`
+    SELECT ad_group.id
+    FROM ad_group
+    WHERE campaign.id = ${cg.campaign_id}
+      AND ad_group.name = '${gaqlEscape(cg.name)}'
+      AND ad_group.status != 'REMOVED'`, 'create_ad_group_dupe_check')
+  if (dupRows[0]?.ad_group?.id) {
+    return {
+      ok: true,
+      summary: `Ad group "${cg.name}" already exists on campaign ${cg.campaign_id} (id ${dupRows[0].ad_group.id}) - nothing to create.`,
+      detail: { campaign_id: cg.campaign_id, existing_ad_group_id: Number(dupRows[0].ad_group.id), created: false },
+    }
+  }
+
+  const ops = buildCreateAdGroupOps(client.customerId, cg)
+  const res = await client.mutate(ops, { approvalId: ctx.approvalId, label: 'create_ad_group' })
+  const adGroupResource = (res.mutate_operation_responses ?? [])
+    .map((r) => r.ad_group_result?.resource_name)
+    .filter((x): x is string => !!x)[0] ?? null
+  const keywordResources = (res.mutate_operation_responses ?? [])
+    .map((r) => r.ad_group_criterion_result?.resource_name)
+    .filter((x): x is string => !!x)
+
+  const kwCount = cg.keywords?.length ?? 0
+  logger.info('ads_create_ad_group_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    campaignId: cg.campaign_id, name: cg.name, seedKeywords: kwCount,
+  })
+  return {
+    ok: true,
+    summary: `Created PAUSED ad group "${cg.name}" on campaign ${cg.campaign_id} with ${kwCount} seed keyword${kwCount === 1 ? '' : 's'} via the Google Ads API. Enabling it is the operator's action in the Google Ads UI.`,
+    detail: {
+      campaign_id: cg.campaign_id, name: cg.name, status: 'PAUSED',
+      default_cpc: cg.default_cpc ?? null,
+      seed_keywords: (cg.keywords ?? []).map((k) => ({ text: k.text, match_type: k.match_type, cpc: k.cpc ?? null })),
+      ad_group_resource_name: adGroupResource, keyword_resource_names: keywordResources,
+      rationale: cg.rationale ?? null,
+    },
+  }
+}
+
+// ── Chunk 1e: create campaign (PAUSED, SEARCH, AU + English) ────────────
+
+export async function execAdsCreateCampaign(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = CreateCampaignInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Create campaign', parsed.error)
+  const cc = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  // Idempotent re-approval: same-name campaign already on the account.
+  const dupRows = await client.query(`
+    SELECT campaign.id
+    FROM campaign
+    WHERE campaign.name = '${gaqlEscape(cc.name)}'
+      AND campaign.status != 'REMOVED'`, 'create_campaign_dupe_check')
+  if (dupRows[0]?.campaign?.id) {
+    return {
+      ok: true,
+      summary: `Campaign "${cc.name}" already exists (id ${dupRows[0].campaign.id}) - nothing to create.`,
+      detail: { existing_campaign_id: Number(dupRows[0].campaign.id), created: false },
+    }
+  }
+
+  const ops = buildCreateCampaignOps(client.customerId, cc)
+  const res = await client.mutate(ops, { approvalId: ctx.approvalId, label: 'create_campaign' })
+  const campaignResource = (res.mutate_operation_responses ?? [])
+    .map((r) => r.campaign_result?.resource_name)
+    .filter((x): x is string => !!x)[0] ?? null
+  const budgetResource = (res.mutate_operation_responses ?? [])
+    .map((r) => r.campaign_budget_result?.resource_name)
+    .filter((x): x is string => !!x)[0] ?? null
+
+  logger.info('ads_create_campaign_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    name: cc.name, dailyBudget: cc.daily_budget, strategy: cc.bidding.strategy,
+  })
+  return {
+    ok: true,
+    summary: `Created PAUSED search campaign "${cc.name}" (daily budget ${cc.daily_budget}, ${cc.bidding.strategy}, AU geo + English) via the Google Ads API. Enabling it is the operator's action in the Google Ads UI.`,
+    detail: {
+      name: cc.name, status: 'PAUSED', daily_budget: cc.daily_budget,
+      bidding: cc.bidding, geo: 'AU', language: 'en',
+      campaign_resource_name: campaignResource, budget_resource_name: budgetResource,
+      rationale: cc.rationale ?? null,
+    },
+  }
+}
+
+// ── Chunk 1e: replace RSA copy (create new + pause old, atomic) ─────────
+
+export async function execAdsUpdateAdCopy(
+  input: Record<string, unknown>,
+  ctx:   IntegrationContext,
+): Promise<ExecutionResult> {
+  if (!ctx.approvalId) return blockedNoApproval()
+
+  const parsed = AdCopyInputSchema.safeParse(input)
+  if (!parsed.success) return validationFailure('Ad copy', parsed.error)
+  const ac = parsed.data
+
+  const client = await forTenant(ctx.tenant.tenantId)
+
+  const agRows = await client.query(`
+    SELECT ad_group.id, ad_group.status
+    FROM ad_group
+    WHERE ad_group.id = ${ac.ad_group_id} AND campaign.id = ${ac.campaign_id}`, 'ad_copy_preread')
+  if (!agRows[0]?.ad_group?.id) {
+    return { ok: false, summary: `Ad group ${ac.ad_group_id} not found on campaign ${ac.campaign_id}.`, error: 'ad_group_not_found' }
+  }
+
+  // Pause target may have changed between proposal and approval - skip
+  // (with a note), don't fail: the new ad is still worth shipping.
+  let pauseApplicable = false
+  let pauseSkipReason: string | null = null
+  if (ac.pause_ad_id != null) {
+    const adRows = await client.query(`
+      SELECT ad_group_ad.ad.id, ad_group_ad.status, ad_group_ad.ad.type
+      FROM ad_group_ad
+      WHERE ad_group.id = ${ac.ad_group_id}
+        AND ad_group_ad.ad.id = ${ac.pause_ad_id}
+        AND ad_group_ad.status != 'REMOVED'`, 'ad_copy_pause_preread')
+    const ad = adRows[0]?.ad_group_ad
+    if (!ad?.ad?.id) {
+      pauseSkipReason = 'not_found_on_ad_group'
+    } else if (enumName(enums.AdGroupAdStatus, ad.status) === 'PAUSED') {
+      pauseSkipReason = 'already_paused'
+    } else {
+      pauseApplicable = true
+    }
+  }
+
+  const ops = [buildCreateRsaOp(client.customerId, ac)]
+  if (pauseApplicable && ac.pause_ad_id != null) {
+    ops.push(buildPauseAdOp(client.customerId, ac.ad_group_id, ac.pause_ad_id))
+  }
+  const res = await client.mutate(ops, { approvalId: ctx.approvalId, label: 'update_ad_copy' })
+  const resourceNames = (res.mutate_operation_responses ?? [])
+    .map((r) => r.ad_group_ad_result?.resource_name)
+    .filter((x): x is string => !!x)
+
+  logger.info('ads_ad_copy_shipped', {
+    tenantId: ctx.tenant.tenantId, approvalId: ctx.approvalId,
+    campaignId: ac.campaign_id, adGroupId: ac.ad_group_id,
+    headlines: ac.headlines.length, descriptions: ac.descriptions.length,
+    pausedOldAd: pauseApplicable, pauseSkipReason,
+  })
+  const pausePart = ac.pause_ad_id == null
+    ? ''
+    : pauseApplicable
+      ? ` Paused old ad ${ac.pause_ad_id} in the same request.`
+      : ` Old ad ${ac.pause_ad_id} not paused (${pauseSkipReason}).`
+  return {
+    ok: true,
+    summary: `Created new responsive search ad on ad group ${ac.ad_group_id} (${ac.headlines.length} headlines, ${ac.descriptions.length} descriptions) via the Google Ads API.${pausePart}`,
+    detail: {
+      campaign_id: ac.campaign_id, ad_group_id: ac.ad_group_id,
+      headlines: ac.headlines, descriptions: ac.descriptions,
+      final_url: ac.final_url, path1: ac.path1 ?? null, path2: ac.path2 ?? null,
+      pause_ad_id: ac.pause_ad_id ?? null, paused_old_ad: pauseApplicable,
+      pause_skip_reason: pauseSkipReason,
+      resource_names: resourceNames, rationale: ac.rationale ?? null,
+    },
+  }
 }

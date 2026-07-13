@@ -17,7 +17,17 @@ import {
   execFramerUpdateMarketingPageText,
 } from '../integrations/framer/executor'
 import { execGscSubmitSitemap } from '../integrations/gsc/executor'
-import { execAdsAddNegativeKeywords, execAdsSetBidModifiers, execAdsEditKeywords } from '../integrations/googleads/executor'
+import {
+  execAdsAddNegativeKeywords,
+  execAdsSetBidModifiers,
+  execAdsEditKeywords,
+  execAdsChangeBids,
+  execAdsChangeBudget,
+  execAdsAddKeywords,
+  execAdsCreateAdGroup,
+  execAdsCreateCampaign,
+  execAdsUpdateAdCopy,
+} from '../integrations/googleads/executor'
 
 // Map of tool_name → handler.
 // When the agent proposes an action via `propose_action`, the toolName field on
@@ -79,6 +89,16 @@ const HANDLERS: Record<
   'ads_add_negative_keywords': (i, c) => execAdsAddNegativeKeywords(i, c),
   'ads_set_bid_modifiers':     (i, c) => execAdsSetBidModifiers(i, c),
   'ads_edit_keywords':         (i, c) => execAdsEditKeywords(i, c),
+
+  // Google Ads (chunks 1d+1e) - bids, budget, expansion, ad copy. Same
+  // spine: zod validation + live pre-reads inside the executor, mutation
+  // unlocked only by ctx.approvalId.
+  'ads_change_bids':           (i, c) => execAdsChangeBids(i, c),
+  'ads_change_budget':         (i, c) => execAdsChangeBudget(i, c),
+  'ads_add_keywords':          (i, c) => execAdsAddKeywords(i, c),
+  'ads_create_ad_group':       (i, c) => execAdsCreateAdGroup(i, c),
+  'ads_create_campaign':       (i, c) => execAdsCreateCampaign(i, c),
+  'ads_update_ad_copy':        (i, c) => execAdsUpdateAdCopy(i, c),
 }
 
 export async function dispatchExecution(

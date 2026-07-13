@@ -13,7 +13,7 @@ import 'dotenv/config'
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { config } from '../config'
 import { normalizeCid, TENANT_CUSTOMER_ID_KEY } from '../integrations/googleads/types'
-import { forTenant, listAccessibleCustomers } from '../integrations/googleads/client'
+import { forTenant, listAccessibleCustomers, probeCustomer } from '../integrations/googleads/client'
 
 const secrets = new SecretManagerServiceClient()
 
@@ -40,7 +40,7 @@ async function main() {
 
   console.log(`\nLinking Google Ads account ${cid} to tenant "${tenantId}"`)
 
-  console.log('1/3 Checking the CID is accessible under the MCC refresh token...')
+  console.log('1/4 Checking the CID is accessible under the MCC refresh token...')
   const accessible = await listAccessibleCustomers()
   if (!accessible.includes(cid)) {
     console.warn(`    ⚠️  ${cid} is not in listAccessibleCustomers (${accessible.length} accounts visible).`)
@@ -50,11 +50,24 @@ async function main() {
     console.log('    ✅ CID visible to the refresh token.')
   }
 
-  console.log(`2/3 Storing secret ${secretId}...`)
+  console.log('2/4 Probing the account (manager-account guard)...')
+  const probe = await probeCustomer(cid)
+  if (probe.isManager) {
+    console.error(`    ❌ ${cid} (${probe.name ?? 'unnamed'}) is a MANAGER account (MCC).`)
+    console.error('    The agent operates a single client account, never a manager - mutations')
+    console.error('    against a manager CID fail, and reporting rows aggregate the wrong surface.')
+    console.error('    Link one of its CHILD client accounts instead. If the customer\'s "account"')
+    console.error('    is itself an MCC, see the manager-to-manager linking notes in the deployment')
+    console.error('    guide and re-run ads:link with the child CID that actually runs the campaigns.')
+    process.exit(1)
+  }
+  console.log(`    ✅ ${probe.name ?? '(no name)'} (${probe.id}, ${probe.currency ?? '?'}) is a client account.${probe.isTestAccount ? ' [test account]' : ''}`)
+
+  console.log(`3/4 Storing secret ${secretId}...`)
   await storeSecret(secretId, cid)
   console.log('    ✅ Stored.')
 
-  console.log('3/3 Verifying read access (one campaign row)...')
+  console.log('4/4 Verifying read access (one campaign row)...')
   const client = await forTenant(tenantId)
   const rows = await client.query(`
     SELECT customer.id, customer.descriptive_name, customer.currency_code

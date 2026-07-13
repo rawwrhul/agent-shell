@@ -38,13 +38,24 @@ const AUTO_EXECUTE_DENYLIST = new Set<string>([
   'outreach_send_mailto',
 ])
 
+/**
+ * Prefixes that must never auto-approve regardless of autonomy level.
+ * ads_* mutations spend client money on their Google Ads account - the
+ * operator approve is the product contract, not a formality. If ads
+ * autonomy is ever wanted, it needs its own explicit design, not a
+ * fall-through here.
+ */
+const AUTO_EXECUTE_DENY_PREFIXES = ['ads_']
+
 export function isFullyAutonomous(tenant: Pick<TenantConfig, 'autonomyLevel'> | null | undefined): boolean {
   return tenant?.autonomyLevel === 'full'
 }
 
 /** Can this tool_name be auto-approved and actually executed end-to-end? */
 export function isAutoExecutable(toolName: string): boolean {
-  return isExecutableToolName(toolName) && !AUTO_EXECUTE_DENYLIST.has(toolName)
+  return isExecutableToolName(toolName)
+    && !AUTO_EXECUTE_DENYLIST.has(toolName)
+    && !AUTO_EXECUTE_DENY_PREFIXES.some((p) => toolName.startsWith(p))
 }
 
 export interface AutoApproveArgs {

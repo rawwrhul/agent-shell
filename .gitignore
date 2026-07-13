@@ -11,3 +11,4 @@ agent-progress/
 phase*.py
 phase*.sh
 *-patch.py
+scripts/owner-opportunity-audit.ts
