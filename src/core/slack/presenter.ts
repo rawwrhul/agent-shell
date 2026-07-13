@@ -39,6 +39,7 @@ import {
 import {
   createRun, getRun, mutateRunState, RunRow,
 } from './state-store';
+import { isSilentTenant, SILENT_ANCHOR_TS } from './silence';
 import type { RenderedMessage } from './blocks';
 import type { FinalReport } from './blocks/types';
 
@@ -442,6 +443,9 @@ export class SlackPresenter {
   private async postAnchor(
     tenantId: string, channelId: string, message: RenderedMessage,
   ): Promise<string | null> {
+    // Silent tenants (autonomy_level='full'): no Slack, ever. Return the
+    // placeholder ts so run-state machinery works without a real message.
+    if (await isSilentTenant(this.pool, tenantId)) return SILENT_ANCHOR_TS;
     const app = this.apps.get(tenantId);
     if (!app) {
       this.logger.warn('slack_no_bot_for_tenant', { tenantId });
@@ -464,6 +468,7 @@ export class SlackPresenter {
   private async editAnchor(
     tenantId: string, channelId: string, anchorTs: string, message: RenderedMessage,
   ): Promise<void> {
+    if (anchorTs === SILENT_ANCHOR_TS || await isSilentTenant(this.pool, tenantId)) return;
     const app = this.apps.get(tenantId);
     if (!app) {
       this.logger.warn('slack_no_bot_for_tenant', { tenantId });
@@ -484,6 +489,7 @@ export class SlackPresenter {
   private async postThread(
     tenantId: string, channelId: string, anchorTs: string, message: RenderedMessage,
   ): Promise<void> {
+    if (anchorTs === SILENT_ANCHOR_TS || await isSilentTenant(this.pool, tenantId)) return;
     const app = this.apps.get(tenantId);
     if (!app) {
       this.logger.warn('slack_no_bot_for_tenant', { tenantId });
@@ -506,6 +512,7 @@ export class SlackPresenter {
   private async postChannel(
     tenantId: string, channelId: string, message: RenderedMessage,
   ): Promise<void> {
+    if (await isSilentTenant(this.pool, tenantId)) return;
     const app = this.apps.get(tenantId);
     if (!app) {
       this.logger.warn('slack_no_bot_for_tenant', { tenantId });
