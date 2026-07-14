@@ -304,6 +304,59 @@ export async function rescoreContentV2(editorId: number, content: string): Promi
   }
 }
 
+/** Read the editor's current content back (HTML). */
+export async function getEditorContentV2(editorId: number): Promise<string> {
+  const wsId = await getWorkspaceId()
+  const key = await apiKey()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 30_000)
+  try {
+    const res = await fetch(`${BASE_V2}/workspaces/${wsId}/content_editors/${editorId}/content`, {
+      headers: { 'API-Key': key, Accept: 'text/html' },
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`Surfer v2 GET content → ${res.status}: ${text.slice(0, 200)}`)
+    }
+    return res.text()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Auto-Optimize: Surfer rewrites the editor's content server-side to raise
+ * its own content score, writing changes directly into the editor. Costs an
+ * Auto-Optimize credit (402/quota error when out). We poll the SEO score's
+ * calculated_at for settle (optimization triggers a recalc), then the
+ * caller reads back the optimized content + fresh score.
+ * Returns { ran, score }: ran=false when Surfer says nothing to optimize
+ * (204); score is the fresh post-optimization SEO score when ran=true.
+ */
+export async function autoOptimizeV2(editorId: number): Promise<{ ran: boolean; score: number | null }> {
+  const wsId = await getWorkspaceId()
+  const pre = await getSeoScoreState(wsId, editorId)
+
+  const key = await apiKey()
+  const res = await fetch(`${BASE_V2}/workspaces/${wsId}/content_editors/${editorId}/auto_optimize`, {
+    method: 'POST',
+    headers: { 'API-Key': key, 'Content-Type': 'application/json', Accept: 'application/json' },
+  })
+  if (res.status === 204) return { ran: false, score: pre.score }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Surfer v2 auto_optimize → ${res.status}: ${text.slice(0, 300)}`)
+  }
+
+  // Optimization is async and can take several minutes on long content.
+  const settled = await pollSeoScore(wsId, editorId, pre.calculatedAt, 480_000, 15_000)
+  if (settled.calculatedAt === pre.calculatedAt) {
+    throw new Error(`Surfer v2 auto_optimize: score did not settle within 8min (editor ${editorId})`)
+  }
+  return { ran: true, score: settled.score }
+}
+
 /** SEO guidelines (terms + structure) from an editor — v2 child endpoints. */
 export async function getGuidelinesV2(editorId: number): Promise<{ terms: unknown; structure: unknown }> {
   const wsId = await getWorkspaceId()

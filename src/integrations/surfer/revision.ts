@@ -25,7 +25,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../../config'
 import { logger } from '../../logger'
 import { callAnthropic } from '../../lib/anthropic-call'
-import { surferRequest, createAndAwaitContentEditor, scoreContentV2, rescoreContentV2 } from './client'
+import { surferRequest, createAndAwaitContentEditor, scoreContentV2, rescoreContentV2, autoOptimizeV2, getEditorContentV2 } from './client'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -467,6 +467,45 @@ export async function qualityGateForAutonomousPublish(args: {
         }
       }
 
+      // Below threshold → AUTO-OPTIMIZE: Surfer rewrites the content
+      // server-side to raise its own score (2026-07-14: LLM revision moved
+      // scores 37→38; Auto-Optimize is the vendor's purpose-built tool for
+      // exactly this gap). Guard: optimized content must keep >=2 internal
+      // links — the pitch validation's hard requirement — else we fall
+      // back to the LLM revision path rather than publish a stripped page.
+      try {
+        const opt = await autoOptimizeV2(first.editorId)
+        if (opt.ran && opt.score !== null) {
+          const optimized = await getEditorContentV2(first.editorId)
+          const linkCount = (optimized.match(/<a\s+href=/gi) ?? []).length
+          if (gateVerdict(opt.score, threshold) && linkCount >= 2) {
+            return {
+              content: optimized, available: true, passed: true,
+              scoreBefore, scoreAfter: opt.score, humanized: false, revised: true, threshold,
+              note: `Surfer ${scoreBefore}→${opt.score}/100 (target ${threshold}, auto-optimized) ✓ auto-publish`,
+            }
+          }
+          if (gateVerdict(opt.score, threshold) && linkCount < 2) {
+            logger.warn('surfer_auto_optimize_stripped_links', {
+              keyword: args.keyword, editorId: first.editorId, linkCount,
+            })
+          } else {
+            // Even Surfer's own optimizer couldn't reach the bar — the topic/
+            // draft is structurally short of the SERP. Discard with evidence.
+            return {
+              content: args.content, available: true, passed: false,
+              scoreBefore, scoreAfter: opt.score, humanized: false, revised: true, threshold,
+              note: `Surfer ${scoreBefore}→${opt.score}/100 after auto-optimize, below target ${threshold} — draft structurally short of this SERP (likely depth/length)`,
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn('surfer_auto_optimize_unavailable', {
+          keyword: args.keyword, editorId: first.editorId, err: String(err).slice(0, 200),
+        })
+      }
+
+      // Fallback below-threshold move: one LLM revision + free re-score.
       const revisedContent = await reviseContent({
         model: args.model, keyword: args.keyword, content: args.content,
         scoreBefore, threshold,

@@ -31,6 +31,11 @@ import { Worker, Job, UnrecoverableError } from 'bullmq'
 function classifyExecutionError(err: unknown): 'permanent' | 'transient' {
   const msg = String(err).toLowerCase()
   // Deterministic — won't change on retry
+  // Quality-gate discards: the verdict is the OUTCOME, not an error.
+  // Retrying re-scores the same draft (identical result) and burns a
+  // Surfer credit per attempt — observed 2026-07-14, 3x retries per pitch.
+  if (msg.includes('below target'))        return 'permanent'
+  if (msg.includes('quality gate'))        return 'permanent'
   if (msg.includes('framerpluginerror'))   return 'permanent'
   if (msg.includes('typia.createassert'))  return 'permanent'
   if (msg.includes('expect to be'))        return 'permanent'    // schema validation
