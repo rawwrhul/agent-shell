@@ -87,6 +87,33 @@ const HARD_ITERATION_CAP = 15
 // intent-budgets.ts). The old flat 8-minute cap clipped every autonomous
 // daily generation run from 2 July onward before it could file its work.
 
+// 2026-07-14: per-tool-call hard timeout. The wall-clock cap is only checked
+// BETWEEN turns, so one tool call that never resolves (unbounded vendor poll,
+// fetch without a timeout) freezes the run past every budget — observed live:
+// specialists stuck 50+ min inside a single call. Any tool call exceeding the
+// cap now returns an error string to the model (which adapts and moves on)
+// instead of freezing the loop. The underlying promise may linger; the run
+// does not.
+const TOOL_CALL_TIMEOUT_MS = 5 * 60_000
+
+async function toolCallWithTimeout(p: Promise<string>, toolName: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<string>(resolve => {
+        timer = setTimeout(() => {
+          logger.error('subagent_tool_call_timeout', { toolName, capMs: TOOL_CALL_TIMEOUT_MS })
+          resolve(`TOOL_TIMEOUT: ${toolName} did not return within ${TOOL_CALL_TIMEOUT_MS / 60000} minutes. The vendor/API is hanging. Do NOT retry this exact call — work with what you have or use a different tool.`)
+        }, TOOL_CALL_TIMEOUT_MS)
+        if (typeof timer.unref === 'function') timer.unref()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 /** SEO tool names that mutate DB state. Stripped in investigate mode. */
 const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
   'propose_action',
@@ -334,22 +361,22 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
           // Memory tools (R2) — DB-only, no hook
           if (isMemoryToolName(tb.name)) {
-            const output = await executeMemoryTool(
+            const output = await toolCallWithTimeout(executeMemoryTool(
               tb.name,
               tb.input as Record<string, unknown>,
               memoryToolCtx,
-            )
+            ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
           }
 
           // SEO tools (R3.1) — DB-only, no hook
           if (isSeoToolName(tb.name)) {
-            const output = await executeSeoTool(
+            const output = await toolCallWithTimeout(executeSeoTool(
               tb.name,
               tb.input as Record<string, unknown>,
               seoToolCtx,
-            )
+            ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
           }
@@ -357,22 +384,22 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
           // Ads skill tools — propose_ads_action files HITL approvals;
           // query tool is read-only. Same ctx shape as the seo skill.
           if (isAdsSkillToolName(tb.name)) {
-            const output = await executeAdsSkillTool(
+            const output = await toolCallWithTimeout(executeAdsSkillTool(
               tb.name,
               tb.input as Record<string, unknown>,
               seoToolCtx,
-            )
+            ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
           }
 
           // Crawler tools (SEO-1) — read-only inventory queries, no hook
           if (isCrawlerToolName(tb.name)) {
-            const output = await executeCrawlerTool(
+            const output = await toolCallWithTimeout(executeCrawlerTool(
               tb.name,
               tb.input as Record<string, unknown>,
               tenant,
-            )
+            ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
           }
@@ -382,11 +409,11 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
           // are routed through propose_action → execution worker, not direct
           // tool calls. No HITL hook needed here.
           if (isIntegrationToolName(tb.name)) {
-            const output = await executeIntegrationTool(
+            const output = await toolCallWithTimeout(executeIntegrationTool(
               tb.name,
               tb.input as Record<string, unknown>,
               tenant,
-            )
+            ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
             continue
           }
@@ -400,7 +427,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
             continue
           }
 
-          const output = await executeTool(tb.name, tb.input as Record<string,unknown>, workDir)
+          const output = await toolCallWithTimeout(executeTool(tb.name, tb.input as Record<string,unknown>, workDir), tb.name)
           results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
         }
 
