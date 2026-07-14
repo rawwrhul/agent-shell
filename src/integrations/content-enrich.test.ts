@@ -25,6 +25,12 @@ describe('findImageSlots', () => {
   it('returns empty for single-section content', () => {
     expect(findImageSlots('<h2>Only</h2><p>x</p>', 2)).toEqual([])
   })
+
+  it('never illustrates navigational headings', () => {
+    const nav = '<h2>Intro</h2><p>' + 'a'.repeat(300) + '</p><h2>Table of Contents</h2><p>links</p><h2>Frequently Asked Questions</h2><p>q</p><h2>Real Section</h2><p>' + 'z'.repeat(300) + '</p>'
+    const slots = findImageSlots(nav, 2)
+    expect(slots.map(s => s.heading)).toEqual(['Real Section'])
+  })
 })
 
 describe('imageQueryFor', () => {

@@ -34,8 +34,10 @@ export function findImageSlots(html: string, max = 2): H2Slot[] {
   }
   if (h2s.length <= 1) return []
 
+  const NAV_HEADINGS = /table of contents|key takeaways|frequently asked|faq|references|sources/i
   const candidates = h2s
     .slice(1) // skip first section
+    .filter(h => !NAV_HEADINGS.test(h.heading))
     .filter(h => !/<img\s/i.test(html.slice(h.end, h.end + 1200)))
   if (candidates.length === 0) return []
 
