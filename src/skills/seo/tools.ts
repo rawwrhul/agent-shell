@@ -494,6 +494,51 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         `PITCH_VALIDATION_FAILED: toolInput.content has ${linkCount} internal links; you need at least 2. Embed 2-4 <a href="<cms-prefix>/SLUG">descriptive anchor text</a> elements inside the body, linking to existing posts from the blog-items list tool. Internal links are a hard requirement, not optional.`
       )
     }
+    // Meta fields are AUTHORED, not derived (learned live: articles shipped
+    // with empty listing-card descriptions because nothing wrote them).
+    const metaTitle = typeof ti.metaTitle === 'string' ? ti.metaTitle.trim() : ''
+    const metaDesc  = typeof ti.metaDescription === 'string' ? ti.metaDescription.trim() : ''
+    if (metaTitle.length < 30 || metaTitle.length > 70) {
+      errors.push(
+        `PITCH_VALIDATION_FAILED: toolInput.metaTitle is ${metaTitle.length} chars; write a compelling SEO title of 30-70 chars (shown in search results and the blog listing).`
+      )
+    }
+    if (metaDesc.length < 70 || metaDesc.length > 160) {
+      errors.push(
+        `PITCH_VALIDATION_FAILED: toolInput.metaDescription is ${metaDesc.length} chars; write a compelling summary of 70-160 chars (shown in search results and as the blog listing card description).`
+      )
+    }
+    // Word-count floor from cached Surfer guidelines (2026-07-14: drafts at
+    // half the SERP's word-count target scored 10-53 even after
+    // auto-optimize — depth is the binding constraint, so enforce it at the
+    // source). Fail-open when no cached guidelines exist for the keyword.
+    try {
+      const kw = typeof ti.targetKeyword === 'string' ? ti.targetKeyword.trim().toLowerCase() : ''
+      if (kw && content) {
+        const { rows: cacheRows } = await pool().query<{ value: Record<string, unknown> }>(
+          `SELECT value FROM cache_entries
+            WHERE source = 'surfer' AND tenant_id = $1 AND key LIKE 'guidelines-v2:%:' || $2
+            ORDER BY created_at DESC LIMIT 1`,
+          [ctx.tenantId, kw],
+        )
+        const structure = (cacheRows[0]?.value as Record<string, unknown> | undefined)?.structure as Record<string, unknown> | undefined
+        const wc = (structure?.word_count ?? (structure as Record<string, unknown> | undefined)?.wordCount) as Record<string, unknown> | undefined
+        const minWords = typeof wc?.min === 'number' ? wc.min : null
+        if (minWords && minWords > 0) {
+          const draftWords = content.replace(/<[^>]+>/g, ' ').split(/\s+/).filter(Boolean).length
+          const floor = Math.max(600, Math.round(minWords * 0.8))
+          if (draftWords < floor) {
+            errors.push(
+              `PITCH_VALIDATION_FAILED: draft is ${draftWords} words but Surfer's SERP guidelines for '${kw}' call for at least ~${minWords} (enforced floor ${floor}). Short drafts score 10-50 at the publish gate and get discarded — expand the draft with genuinely useful depth (concrete steps, numbers, examples, FAQs) to at least ${floor} words BEFORE filing.`,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      logger.info('pitch_word_count_check_skipped', {
+        tenantId: ctx.tenantId, err: String(err).slice(0, 160),
+      })
+    }
     // Cannibalization guard: slug collision, near-duplicate title, and
     // target-keyword overlap against pages that already rank. Fail-open on
     // missing data; blocks only on positive evidence of overlap.

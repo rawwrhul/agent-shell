@@ -146,12 +146,14 @@ export async function execWebflowRollbackDraft(
 // ── approve_blog_pitch (Stage 1, Webflow route) ─────────────────────────────
 
 export interface WfApproveBlogPitchInput {
-  slug:           string
-  title:          string
-  content:        string          // HTML for the RichText body field
-  imageUrl?:      string
-  whyThisTopic?:  string
-  targetKeyword?: string
+  slug:            string
+  title:           string
+  content:         string          // HTML for the RichText body field
+  imageUrl?:       string
+  whyThisTopic?:   string
+  targetKeyword?:  string
+  metaTitle?:      string          // agent-authored SEO title (listing card + SERP)
+  metaDescription?: string         // agent-authored SEO description (listing card + SERP)
 }
 
 export async function execWebflowApproveBlogPitch(
@@ -238,6 +240,14 @@ export async function execWebflowApproveBlogPitch(
       [map.bodyField]:  draftContent,
     }
     if (map.metaDescField && !fieldData[map.metaDescField]) fieldData[map.metaDescField] = summary
+    // SEO/listing fields (the blog card renders meta-description). Prefer
+    // the agent-AUTHORED values from the pitch; derive only as fallback.
+    const seoDesc = input.metaDescription?.trim()
+      || (summary.length > 158 ? `${summary.slice(0, 155).replace(/\s+\S*$/, '')}…` : summary)
+    if (map.seoTitleField && !fieldData[map.seoTitleField]) {
+      fieldData[map.seoTitleField] = (input.metaTitle?.trim() || input.title).slice(0, 70)
+    }
+    if (map.seoDescField && !fieldData[map.seoDescField]) fieldData[map.seoDescField] = seoDesc
     if (input.imageUrl && map.imageField) {
       fieldData[map.imageField] = { url: input.imageUrl, alt: input.title }
     }

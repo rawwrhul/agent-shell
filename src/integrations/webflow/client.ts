@@ -108,7 +108,11 @@ export interface BlogFieldMap {
   slugField:      string    // built-in 'slug'
   bodyField:      string | null       // first RichText field
   imageField:     string | null       // first Image field
-  metaDescField:  string | null       // PlainText field matching meta/summary/description
+  metaDescField:  string | null       // PlainText summary/excerpt field
+  /** SEO/listing fields — distinct from the summary (learned live: the
+   *  blog listing card binds meta-description, not post-summary). */
+  seoTitleField:  string | null
+  seoDescField:   string | null
 }
 
 const fieldMapCache = new Map<string, { map: BlogFieldMap; exp: number }>()
@@ -148,7 +152,9 @@ export async function resolveBlogFields(tenant: TenantConfig): Promise<BlogField
     slugField:      'slug',
     bodyField:      bySlugPattern(/^RichText$/i, /body|content|post/i) ?? bySlugPattern(/^RichText$/i),
     imageField:     bySlugPattern(/^Image$/i, /main|hero|thumb|feature/i) ?? bySlugPattern(/^Image$/i),
-    metaDescField:  bySlugPattern(/^PlainText$/i, /meta|summary|description|excerpt/i),
+    metaDescField:  bySlugPattern(/^PlainText$/i, /summary|excerpt/i) ?? bySlugPattern(/^PlainText$/i, /description/i),
+    seoTitleField:  bySlugPattern(/^PlainText$/i, /meta.?title/i),
+    seoDescField:   bySlugPattern(/^PlainText$/i, /meta.?desc/i),
   }
 
   logger.info('webflow_blog_fields_resolved', {

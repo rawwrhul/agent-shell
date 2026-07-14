@@ -827,8 +827,9 @@ If you file without these, the system returns PITCH_VALIDATION_FAILED and you ha
 
 C.1  File propose_action ONCE with:
      toolName       = "approve_blog_pitch"
-     toolInput      = { slug, title, content, imageUrl, whyThisTopic, targetKeyword }
+     toolInput      = { slug, title, content, imageUrl, whyThisTopic, targetKeyword, metaTitle, metaDescription }
      (targetKeyword = the validated primary query from A.5 — it drives the Surfer content score AND the cannibalization check, so pass the real keyword, not the title)
+     (metaTitle = 30-70 char SEO title; metaDescription = 70-160 char compelling summary — BOTH REQUIRED, server-validated. They render in Google results AND as the blog listing card, so write them as ad copy for the click, not as an afterthought.)
      proposedAction = one-line plain-English pitch summary for the operator
      priority       = P0 / P1 / P2 / P3
      previewUrl     = https://${cmsDomain}${cmsPrefix}<slug> (will 404 until Stage 2 approve)
