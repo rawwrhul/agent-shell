@@ -25,7 +25,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../../config'
 import { logger } from '../../logger'
 import { callAnthropic } from '../../lib/anthropic-call'
-import { surferRequest, createAndAwaitContentEditor } from './client'
+import { surferRequest, createAndAwaitContentEditor, scoreContentV2, rescoreContentV2 } from './client'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -110,12 +110,15 @@ async function reviseContent(args: {
   content:     string
   scoreBefore: number
   threshold:   number
+  reasons?:    string
 }): Promise<string | null> {
-  const { model, keyword, content, scoreBefore, threshold } = args
+  const { model, keyword, content, scoreBefore, threshold, reasons } = args
   const sys =
     `You are an SEO content editor. You will receive an HTML blog draft that scored ` +
-    `${scoreBefore}/100 on SurferSEO's content score for the target keyword "${keyword}", ` +
-    `below the target of ${threshold}. Revise it to raise the score: improve topical ` +
+    `${scoreBefore}/100 on an editorial quality review for the target keyword "${keyword}", ` +
+    `below the target of ${threshold}.` +
+    (reasons ? ` The reviewer's specific criticisms: ${reasons}.` : '') +
+    ` Revise it to raise the score: improve topical ` +
     `coverage and natural use of the target keyword and closely-related terms, tighten ` +
     `structure, and ensure headings and depth match search intent. ` +
     `HARD CONSTRAINTS: preserve the exact HTML structure and tag set; do NOT remove or ` +
@@ -143,9 +146,80 @@ async function reviseContent(args: {
   }
 }
 
+// ── LLM rubric scorer ───────────────────────────────────────────────────────
+//
+// 2026-07-14 REALITY CHECK (probed live): on our Surfer plan the public API
+// only CREATES content editors — /content_score, /ai_detector and /humanize
+// return 404, and the editor detail endpoint returns metadata without
+// guidelines. Every article gate call failed on phantom endpoints. The score
+// is now produced by a strict LLM rubric review — no vendor in the publish
+// path. Function names keep the module story; the score is ours.
+
+export interface RubricScore {
+  score:     number | null
+  reasons:   string
+  available: boolean
+}
+
+/** Exported for tests: lenient JSON extraction of { score, reasons }. */
+export function parseRubricResponse(text: string): { score: number; reasons: string } | null {
+  const match = text.match(/\{[\s\S]*\}/)
+  if (!match) return null
+  try {
+    const obj = JSON.parse(match[0]) as { score?: unknown; reasons?: unknown }
+    const n = typeof obj.score === 'number' ? obj.score : Number(obj.score)
+    if (!Number.isFinite(n) || n < 0 || n > 100) return null
+    return { score: Math.round(n), reasons: typeof obj.reasons === 'string' ? obj.reasons.slice(0, 500) : '' }
+  } catch {
+    return null
+  }
+}
+
+async function rubricScore(args: {
+  model:   string
+  keyword: string
+  content: string
+}): Promise<RubricScore> {
+  const sys =
+    `You are a strict editorial reviewer for SEO content that will publish UNREVIEWED to a ` +
+    `client's live site. Score the HTML draft 0-100 against this rubric, weighting equally:\n` +
+    `1. SEARCH INTENT: does it fully answer what someone searching "${args.keyword}" wants?\n` +
+    `2. DEPTH & SPECIFICITY: concrete numbers, steps, examples — not generic filler.\n` +
+    `3. STRUCTURE: scannable headings that follow the query logic; no wall-of-text.\n` +
+    `4. NATURAL KEYWORD USE: target phrase and related terms used naturally; ANY stuffing caps the score at 50.\n` +
+    `5. TRUST: claims are plausible and hedged appropriately; nothing that could embarrass the brand or mislead a customer.\n` +
+    `Calibration: 85+ exceptional, 75 good enough to publish unreviewed, 60 mediocre, <50 broken or risky. ` +
+    `Most first drafts should land 60-80. Be strict — a generous score ships bad content with no human backstop.\n` +
+    `Respond with ONLY this JSON: {"score": <0-100>, "reasons": "<one or two sentences on what holds it back>"}`
+
+  try {
+    const res = await callAnthropic(anthropic, {
+      model:      args.model,
+      max_tokens: 300,
+      system:     sys,
+      messages:   [{ role: 'user', content: args.content.slice(0, 60_000) }],
+    }, { label: 'article-rubric-score' })
+
+    const text = res.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map(b => b.text)
+      .join('')
+    const parsed = parseRubricResponse(text)
+    if (!parsed) {
+      logger.warn('rubric_score_unparseable', { keyword: args.keyword, sample: text.slice(0, 120) })
+      return { score: null, reasons: '', available: false }
+    }
+    return { ...parsed, available: true }
+  } catch (err) {
+    logger.warn('rubric_score_failed', { keyword: args.keyword, err: String(err).slice(0, 200) })
+    return { score: null, reasons: '', available: false }
+  }
+}
+
 /**
  * Score a draft and, if it's below threshold, run a single revision pass.
  * Never throws — returns the best content we have plus a trajectory note.
+ * (HITL path: best-effort, never blocks — a human reviews the draft anyway.)
  */
 export async function scoreAndMaybeRevise(args: {
   model:     string
@@ -155,67 +229,52 @@ export async function scoreAndMaybeRevise(args: {
   threshold?: number
 }): Promise<RevisionResult> {
   const threshold = args.threshold ?? DEFAULT_SCORE_THRESHOLD
-  const location  = args.location  ?? DEFAULT_LOCATION
   const base: RevisionResult = { content: args.content, available: false, scored: false, revised: false, threshold }
 
   if (!args.keyword || !args.content) {
     return { ...base, note: 'scoring skipped: missing keyword or content' }
   }
 
-  try {
-    const editor = await createAndAwaitContentEditor(args.keyword, location)
-    const editorId = editorIdOf(editor)
-    if (editorId === null) {
-      logger.info('surfer_revision_unavailable', { reason: 'no_editor_id', keyword: args.keyword })
-      return { ...base, note: 'Surfer scoring unavailable (editor id not resolved)' }
-    }
+  const before = await rubricScore({ model: args.model, keyword: args.keyword, content: args.content })
+  if (!before.available || before.score === null) {
+    return { ...base, note: 'quality scoring unavailable' }
+  }
 
-    const scoreBefore = await scoreAgainstEditor(editorId, args.content)
-    if (scoreBefore === null) {
-      return { ...base, available: true, note: 'Surfer scoring unavailable (no score in response)' }
-    }
-
-    // Above threshold → ship as-is.
-    if (scoreBefore >= threshold) {
-      return {
-        content: args.content, available: true, scored: true, scoreBefore,
-        revised: false, threshold,
-        note: `Surfer ${scoreBefore}/100 (target ${threshold}) ✓`,
-      }
-    }
-
-    // Below → one revision pass.
-    const revised = await reviseContent({ model: args.model, keyword: args.keyword, content: args.content, scoreBefore, threshold })
-    if (!revised) {
-      return {
-        content: args.content, available: true, scored: true, scoreBefore,
-        revised: false, threshold,
-        note: `Surfer ${scoreBefore}/100 (target ${threshold}) — below target, revision pass failed`,
-      }
-    }
-
-    const scoreAfter = await scoreAgainstEditor(editorId, revised)
-    // Keep whichever scored higher; protect the customer from a worse rewrite.
-    const keepRevised = scoreAfter !== null && scoreAfter >= scoreBefore
+  if (before.score >= threshold) {
     return {
-      content:    keepRevised ? revised : args.content,
-      available:  true,
-      scored:     true,
-      scoreBefore,
-      scoreAfter: scoreAfter ?? undefined,
-      revised:    keepRevised,
-      threshold,
-      note: scoreAfter === null
-        ? `Surfer ${scoreBefore}/100 — revised, re-score unavailable (kept original)`
-        : keepRevised
-          ? `Surfer ${scoreBefore}→${scoreAfter}/100 (target ${threshold}, revised)`
-          : `Surfer ${scoreBefore}→${scoreAfter}/100 — revision scored lower, kept original`,
+      content: args.content, available: true, scored: true, scoreBefore: before.score,
+      revised: false, threshold,
+      note: `Quality ${before.score}/100 (target ${threshold}) ✓`,
     }
-  } catch (err) {
-    // Missing key throws here ("Surfer API key not configured"), as does any
-    // network/shape failure. Degrade silently to the original draft.
-    logger.info('surfer_revision_degraded', { keyword: args.keyword, err: String(err).slice(0, 200) })
-    return { ...base, note: 'Surfer scoring unavailable' }
+  }
+
+  const revised = await reviseContent({
+    model: args.model, keyword: args.keyword, content: args.content,
+    scoreBefore: before.score, threshold, reasons: before.reasons,
+  })
+  if (!revised) {
+    return {
+      content: args.content, available: true, scored: true, scoreBefore: before.score,
+      revised: false, threshold,
+      note: `Quality ${before.score}/100 (target ${threshold}) — below target, revision pass failed`,
+    }
+  }
+
+  const after = await rubricScore({ model: args.model, keyword: args.keyword, content: revised })
+  const keepRevised = after.available && after.score !== null && after.score >= before.score
+  return {
+    content:    keepRevised ? revised : args.content,
+    available:  true,
+    scored:     true,
+    scoreBefore: before.score,
+    scoreAfter: after.score ?? undefined,
+    revised:    keepRevised,
+    threshold,
+    note: after.score === null
+      ? `Quality ${before.score}/100 — revised, re-score unavailable (kept original)`
+      : keepRevised
+        ? `Quality ${before.score}→${after.score}/100 (target ${threshold}, revised)`
+        : `Quality ${before.score}→${after.score}/100 — revision scored lower, kept original`,
   }
 }
 
@@ -391,83 +450,100 @@ export async function qualityGateForAutonomousPublish(args: {
     return fail('quality gate failed closed: missing keyword or content')
   }
 
+  // ── Primary: Surfer v2 content score (SERP-calibrated, verified live
+  //    2026-07-14 against /llms.txt docs). One credit per article; the
+  //    revision re-score reuses the same editor for free. ───────────────
   try {
-    const editor   = await createAndAwaitContentEditor(args.keyword, location)
-    const editorId = editorIdOf(editor)
-    if (editorId === null) {
-      return fail('quality gate failed closed: Surfer editor id not resolved')
-    }
-
-    // ── 1+2. AI detection → humanize → fact re-verify ────────────────────
-    let candidate  = args.content
-    let humanized  = false
-    let aiDetected: boolean | undefined
-    try {
-      const detection = await surferRequest('POST', '/ai_detector', { content: candidate, text: candidate })
-      const verdict = extractAiVerdict(detection)
-      if (verdict !== null) aiDetected = verdict
-
-      if (verdict === true) {
-        const humanizeRes  = await surferRequest('POST', '/humanize', { content: candidate, text: candidate })
-        const humanizedRaw = extractHumanizedText(humanizeRes, candidate.length)
-        if (humanizedRaw) {
-          const verified = await factVerifyHumanized({
-            model: args.model, original: candidate, humanized: humanizedRaw,
-          })
-          if (verified) {
-            candidate = verified
-            humanized = true
-          }
-          // No verified output → keep pre-humanize draft. Never ship an
-          // unverified humanize pass (fact-drift failure mode).
+    const first = await scoreContentV2({
+      keyword: args.keyword, content: args.content, location,
+    })
+    const scoreBefore = first.seo ?? first.total
+    if (scoreBefore !== null) {
+      if (gateVerdict(scoreBefore, threshold)) {
+        return {
+          content: args.content, available: true, passed: true,
+          scoreBefore, humanized: false, revised: false, threshold,
+          note: `Surfer ${scoreBefore}/100 (target ${threshold}) ✓ auto-publish`,
         }
       }
-    } catch (err) {
-      // Detection/humanize are quality-improvement steps, not the gate
-      // itself — scoring below still decides pass/fail.
-      logger.info('surfer_quality_gate_humanize_skipped', {
-        keyword: args.keyword, err: String(err).slice(0, 200),
-      })
-    }
 
-    // ── 3. Score; revise once if below threshold ─────────────────────────
-    const scoreBefore = await scoreAgainstEditor(editorId, candidate)
-    if (scoreBefore === null) {
-      return fail('quality gate failed closed: no score in Surfer response', { humanized, aiDetected })
+      const revisedContent = await reviseContent({
+        model: args.model, keyword: args.keyword, content: args.content,
+        scoreBefore, threshold,
+      })
+      const after = revisedContent
+        ? await rescoreContentV2(first.editorId, revisedContent).catch(() => null)
+        : null
+      const scoreAfter  = after ? (after.seo ?? after.total) : null
+      const keepRevised = scoreAfter !== null && scoreAfter >= scoreBefore
+      const finalScore  = keepRevised ? scoreAfter : scoreBefore
+      const passed      = gateVerdict(finalScore, threshold)
+
+      return {
+        content:    keepRevised && revisedContent ? revisedContent : args.content,
+        available:  true,
+        passed,
+        scoreBefore,
+        scoreAfter: scoreAfter ?? undefined,
+        humanized:  false,
+        revised:    keepRevised,
+        threshold,
+        note: passed
+          ? `Surfer ${scoreBefore}→${finalScore}/100 (target ${threshold}, revised) ✓ auto-publish`
+          : `Surfer ${scoreBefore}${scoreAfter !== null ? `→${scoreAfter}` : ''}/100 below target ${threshold}`,
+      }
     }
+    logger.warn('surfer_v2_score_null_falling_back_to_rubric', { keyword: args.keyword, editorId: first.editorId })
+  } catch (err) {
+    logger.warn('surfer_v2_gate_unavailable_falling_back_to_rubric', {
+      keyword: args.keyword, err: String(err).slice(0, 200),
+    })
+  }
+
+  // ── Fallback: strict LLM rubric — articles keep flowing when Surfer is
+  //    down, and NOTHING publishes unscored either way. ─────────────────
+  try {
+    const before = await rubricScore({ model: args.model, keyword: args.keyword, content: args.content })
+    if (!before.available || before.score === null) {
+      return fail('quality gate failed closed: Surfer and rubric scoring both unavailable')
+    }
+    const scoreBefore = before.score
 
     if (gateVerdict(scoreBefore, threshold)) {
       return {
-        content: candidate, available: true, passed: true,
-        scoreBefore, aiDetected, humanized, revised: false, threshold,
-        note: `Surfer ${scoreBefore}/100 (target ${threshold})${humanized ? ', humanized' : ''} ✓ auto-publish`,
+        content: args.content, available: true, passed: true,
+        scoreBefore, humanized: false, revised: false, threshold,
+        note: `Rubric ${scoreBefore}/100 (target ${threshold}, Surfer unavailable) ✓ auto-publish`,
       }
     }
 
     const revisedContent = await reviseContent({
-      model: args.model, keyword: args.keyword, content: candidate, scoreBefore, threshold,
+      model: args.model, keyword: args.keyword, content: args.content,
+      scoreBefore, threshold, reasons: before.reasons,
     })
-    const scoreAfter = revisedContent ? await scoreAgainstEditor(editorId, revisedContent) : null
+    const after = revisedContent
+      ? await rubricScore({ model: args.model, keyword: args.keyword, content: revisedContent })
+      : null
+    const scoreAfter  = after?.score ?? null
     const keepRevised = scoreAfter !== null && scoreAfter >= scoreBefore
     const finalScore  = keepRevised ? scoreAfter : scoreBefore
     const passed      = gateVerdict(finalScore, threshold)
 
     return {
-      content:    keepRevised && revisedContent ? revisedContent : candidate,
+      content:    keepRevised && revisedContent ? revisedContent : args.content,
       available:  true,
       passed,
       scoreBefore,
       scoreAfter: scoreAfter ?? undefined,
-      aiDetected,
-      humanized,
+      humanized:  false,
       revised:    keepRevised,
       threshold,
       note: passed
-        ? `Surfer ${scoreBefore}→${finalScore}/100 (target ${threshold}, revised${humanized ? ' + humanized' : ''}) ✓ auto-publish`
-        : `Surfer ${scoreBefore}${scoreAfter !== null ? `→${scoreAfter}` : ''}/100 below target ${threshold} — held for human review`,
+        ? `Rubric ${scoreBefore}→${finalScore}/100 (target ${threshold}, revised, Surfer unavailable) ✓ auto-publish`
+        : `Rubric ${scoreBefore}${scoreAfter !== null ? `→${scoreAfter}` : ''}/100 below target ${threshold}${before.reasons ? ` — ${before.reasons}` : ''}`,
     }
   } catch (err) {
-    logger.info('surfer_quality_gate_degraded', { keyword: args.keyword, err: String(err).slice(0, 200) })
-    return fail('quality gate failed closed: Surfer unavailable')
+    logger.info('quality_gate_degraded', { keyword: args.keyword, err: String(err).slice(0, 200) })
+    return fail('quality gate failed closed: scoring error')
   }
 }
