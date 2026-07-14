@@ -190,9 +190,14 @@ export const SEO_TOOLS: Anthropic.Tool[] = [
       "On approve: executor records acknowledgement; operator does the work in Framer.\n\n" +
       "  • framer_confirm_publish / framer_rollback_draft — LEGACY two-phase commit. Use ONLY if you have a confirmationHash from a prior framer_draft_blog_post call. " +
       "For all NEW work, prefer framer_create_and_publish_blog_post.\n\n" +
-      "CRITICAL: toolName MUST be one of the four values listed above. Do NOT use the name of any agent-callable research tool " +
+      "CRITICAL: toolName MUST be one of the registered executor names listed above. Do NOT use the name of any agent-callable research tool " +
       "(framer_draft_blog_post, framer_list_blog_items, framer_get_changed_paths, analyze_page, dataforseo_*, etc.). " +
-      "Those are not registered executors — the approval button will be a dead button if you do.",
+      "Those are not registered executors — the approval button will be a dead button if you do.\n\n" +
+      "TENANT CMS NOTE: if your system prompt says this tenant is on WEBFLOW, use the webflow_* equivalents of the framer_* names above — " +
+      "same toolInput shapes: webflow_update_blog_meta, webflow_update_blog_body, webflow_add_blog_alt_text, webflow_add_internal_link, " +
+      "webflow_update_marketing_page_text, plus webflow_update_page_meta ({ pagePath, newTitle?, newDescription? }) for STATIC/service page meta " +
+      "(API-writable on Webflow — never a manual task). Framer-only: framer_add_site_schema (on Webflow, site-wide schema goes to manual_operator_task). " +
+      "previewUrl domain comes from the tenant's target domain, not tarino.au.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -408,6 +413,22 @@ async function doQueryRecentActions(ctx: SeoToolContext): Promise<string> {
   ).join('\n');
 }
 
+// framer_* ↔ webflow_* equivalents with identical toolInput shapes. Used to
+// deterministically self-correct when the agent names the wrong CMS's tool
+// (the propose_action description grew up Framer-first; LLMs drift).
+const FRAMER_TO_WEBFLOW: Record<string, string> = {
+  framer_update_blog_meta:            'webflow_update_blog_meta',
+  framer_update_blog_body:            'webflow_update_blog_body',
+  framer_add_blog_alt_text:           'webflow_add_blog_alt_text',
+  framer_add_internal_link:           'webflow_add_internal_link',
+  framer_update_marketing_page_text:  'webflow_update_marketing_page_text',
+  framer_confirm_publish:             'webflow_confirm_publish',
+  framer_rollback_draft:              'webflow_rollback_draft',
+};
+const WEBFLOW_TO_FRAMER: Record<string, string> = Object.fromEntries(
+  Object.entries(FRAMER_TO_WEBFLOW).map(([f, w]) => [w, f]),
+);
+
 async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolContext): Promise<string> {
   const i = input as {
     toolName: string;
@@ -420,6 +441,38 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     /** Task 0.5: optional preview URL (Framer staging URL for draft pages). */
     previewUrl?: string;
   };
+
+  // CMS tool-name correction (deterministic, before any validation).
+  // Learned live 2026-07-14: hd-seo (Webflow) filed framer_add_blog_alt_text,
+  // which auto-approved and failed on the missing framer_project_url.
+  let cmsShimTenant: Awaited<ReturnType<typeof getTenant>> | null = null;
+  try { cmsShimTenant = await getTenant(ctx.tenantId); } catch { /* proceed unshimmed */ }
+  const tenantIsWebflow = Array.isArray(cmsShimTenant?.integrations) && cmsShimTenant.integrations.includes('webflow');
+  if (tenantIsWebflow && i.toolName.startsWith('framer_')) {
+    const mapped = FRAMER_TO_WEBFLOW[i.toolName];
+    if (mapped) {
+      logger.warn('seo_propose_action_cms_translated', {
+        tenantId: ctx.tenantId, from: i.toolName, to: mapped,
+      });
+      i.toolName = mapped;
+    } else {
+      return `CMS_TOOL_MISMATCH: this tenant is on WEBFLOW; '${i.toolName}' is Framer-only and has no Webflow equivalent. ` +
+        (i.toolName === 'framer_create_and_publish_blog_post'
+          ? `Use toolName='approve_blog_pitch' for new posts.`
+          : `For site-wide schema/custom code on Webflow, file manual_operator_task with precise instructions.`);
+    }
+  } else if (!tenantIsWebflow && i.toolName.startsWith('webflow_')) {
+    const mapped = WEBFLOW_TO_FRAMER[i.toolName];
+    if (mapped) {
+      logger.warn('seo_propose_action_cms_translated', {
+        tenantId: ctx.tenantId, from: i.toolName, to: mapped,
+      });
+      i.toolName = mapped;
+    } else {
+      return `CMS_TOOL_MISMATCH: this tenant is on FRAMER; '${i.toolName}' is Webflow-only. ` +
+        `Marketing-page meta on Framer is not API-writable — file manual_operator_task instead.`;
+    }
+  }
 
   // Phase 9c+: blog publish validation — covers approve_blog_pitch AND the deprecated single-stage path so neither can publish without a hero image + ≥2 internal links. Forces the agent to comply
   // with the prompt's image + internal-link requirements rather than
@@ -445,13 +498,12 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
     // target-keyword overlap against pages that already rank. Fail-open on
     // missing data; blocks only on positive evidence of overlap.
     try {
-      const guardTenant = await getTenant(ctx.tenantId).catch(() => null)
       const cannibal = await checkCannibalization(pool(), {
         tenantId:      ctx.tenantId,
         slug:          typeof ti.slug === 'string' ? ti.slug : '',
         title:         typeof ti.title === 'string' ? ti.title : '',
         targetKeyword: typeof ti.targetKeyword === 'string' ? ti.targetKeyword : undefined,
-        cmsPrefix:     guardTenant?.cmsPathPrefixes?.[0] ?? '/resources/',
+        cmsPrefix:     cmsShimTenant?.cmsPathPrefixes?.[0] ?? '/resources/',
       })
       errors.push(...cannibal)
     } catch (err) {
@@ -475,8 +527,7 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
   //   evaluates to false, and no card ever appears in the channel — the
   //   operator only knows about the approval if they happen to be checking
   //   the DB.
-  let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
-  try { tenant = await getTenant(ctx.tenantId); } catch { /* fall through with null */ }
+  const tenant = cmsShimTenant;
   const effectiveChannelId = ctx.channelId ?? tenant?.slackChannelId ?? null;
 
   // Deterministic pre-flight gates for non-article live-site edits —

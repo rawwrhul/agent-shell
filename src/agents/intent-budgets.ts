@@ -26,9 +26,27 @@ export const ITERATION_CAPS: Record<TaskIntent, number> = {
   investigate:      15,
   propose_changes:  25,
   execute_approved: 10,
-  daily_generation: 20,
+  daily_generation: 32,   // autonomous era: grounding + Surfer guidelines +
+                          // draft + 5-7 propose_action calls + gate retries
   weekly_audit:     20,   // bigger window: look across the week's deltas
   weekly_digest:    12,   // simpler: gather + format wins, no deep research
+}
+
+/**
+ * Wall-clock cap per specialist run, by intent. Replaces the flat 8-minute
+ * MAX_SPECIALIST_DURATION_MS that silently strangled every daily generation
+ * run from 2 July onward (observed need: 8-15 min; Surfer's SERP scrape
+ * alone is ~2 min on cache miss). Generous caps are safe because the
+ * iteration cap + token ceiling still bound runaway loops — wall-clock is
+ * the backstop, not the governor.
+ */
+export const WALL_CLOCK_CAPS_MS: Record<TaskIntent, number> = {
+  investigate:       8 * 60_000,
+  propose_changes:  20 * 60_000,
+  execute_approved:  8 * 60_000,
+  daily_generation: 40 * 60_000,
+  weekly_audit:     30 * 60_000,
+  weekly_digest:    10 * 60_000,
 }
 
 /**
@@ -65,6 +83,7 @@ export function budgetsFor(intent: TaskIntent | undefined): {
   iterationCap: number
   maxTokens: number
   tokenCeiling: number
+  wallClockMs: number
 } {
   const safe: TaskIntent = (intent && intent in ITERATION_CAPS)
     ? intent
@@ -73,5 +92,6 @@ export function budgetsFor(intent: TaskIntent | undefined): {
     iterationCap: ITERATION_CAPS[safe],
     maxTokens: MAX_TOKENS_PER_CALL[safe],
     tokenCeiling: PER_SUBAGENT_TOKEN_CEILING[safe],
+    wallClockMs: WALL_CLOCK_CAPS_MS[safe],
   }
 }

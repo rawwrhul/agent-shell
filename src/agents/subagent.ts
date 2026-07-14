@@ -83,7 +83,9 @@ const HARD_ITERATION_CAP = 15
 // Caps both runaway loops and unbounded research. Tenant.tokenBudgetPerRun
 // is the soft ceiling per specialist; if it overruns we break out with a
 // graceful summary rather than letting the loop continue burning credits.
-const MAX_SPECIALIST_DURATION_MS = 8 * 60 * 1000   // 8 minutes hard ceiling
+// 2026-07-14: wall-clock is now INTENT-AWARE (budgets.wallClockMs from
+// intent-budgets.ts). The old flat 8-minute cap clipped every autonomous
+// daily generation run from 2 July onward before it could file its work.
 
 /** SEO tool names that mutate DB state. Stripped in investigate mode. */
 const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
@@ -244,11 +246,12 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     while (turns < iterationCap) {
       turns++
 
-      // Phase 8.5: wall-clock check (before API call so we don't burn one)
+      // Phase 8.5: wall-clock check (before API call so we don't burn one).
+      // Intent-aware since 2026-07-14 — daily_generation gets 40min.
       const elapsedMs = Date.now() - startedAt
-      if (elapsedMs > MAX_SPECIALIST_DURATION_MS) {
-        budgetExhausted = `wall-clock ${Math.round(elapsedMs / 1000)}s exceeded cap ${MAX_SPECIALIST_DURATION_MS / 1000}s`
-        logger.warn('subagent_budget_wall_clock', { taskId: task.id, subTaskId, elapsedMs, turns })
+      if (elapsedMs > budgets.wallClockMs) {
+        budgetExhausted = `wall-clock ${Math.round(elapsedMs / 1000)}s exceeded cap ${budgets.wallClockMs / 1000}s`
+        logger.warn('subagent_budget_wall_clock', { taskId: task.id, subTaskId, elapsedMs, turns, capMs: budgets.wallClockMs })
         break
       }
       // Phase 8.5: token-budget check (tenant-configured ceiling)
