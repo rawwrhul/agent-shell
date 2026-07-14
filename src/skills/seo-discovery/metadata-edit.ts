@@ -23,9 +23,9 @@ import { fileScoredOpportunity } from './file-opportunity'
 import { loadRankingRows, groupByPage, round2, round4 } from './common'
 
 const ACTION = 'metadata_edit' as const
-const MAX_POSITION = 20
+const MAX_POSITION = 30
 const CTR_GAP_RATIO = 0.7   // a query's actual CTR must be below 70% of expected to count
-const MAX_CANDIDATES = 50
+const MAX_CANDIDATES = 150
 
 interface Gap { keyword: string; pos: number; impressions: number; actualCtr: number; expectedCtr: number; ev: number }
 

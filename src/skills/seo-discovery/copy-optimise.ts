@@ -25,8 +25,8 @@ import { loadRankingRows, groupByPage, round2 } from './common'
 
 const ACTION = 'copy_optimise' as const
 const MIN_POSITION = 5
-const MAX_POSITION = 30
-const MAX_CANDIDATES = 50
+const MAX_POSITION = 50
+const MAX_CANDIDATES = 150
 
 interface Cand { keyword: string; pos: number; impressions: number; ev: number }
 

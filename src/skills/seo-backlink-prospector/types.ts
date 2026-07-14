@@ -50,7 +50,7 @@ export interface ProspectCycleResult {
 export const MIN_PROSPECT_DR = 20
 
 /** Maximum prospects to file per cycle. Keeps the bank from flooding. */
-export const MAX_PROSPECTS_PER_CYCLE = 15
+export const MAX_PROSPECTS_PER_CYCLE = 40
 
 /** Skip referring domains we already have any link from — pursue NEW
  *  domains over more links from existing ones, for diversity. */

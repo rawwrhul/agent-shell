@@ -37,7 +37,7 @@ const ACTION = 'article_create' as const
 const CAPTURE_POSITION = 5    // assumed rank if a strong article is built + ranks
 const SERVED_POSITION = 10    // cluster is "served" if a matching query ranks <= this
 const VOLUME_TTL_SECONDS = 30 * 24 * 3600
-const MAX_KEYWORDS = 50
+const MAX_KEYWORDS = 100
 
 export interface ArticleCreateResult {
   tenantId:   string
