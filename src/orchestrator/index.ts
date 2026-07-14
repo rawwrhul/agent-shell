@@ -164,6 +164,20 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
                 taskId: task.id, specialistType: input.specialist_type, rawIntent,
               })
             }
+            // 2026-07-14: on CRON runs the trigger owns the intent. The
+            // orchestrator model was downgrading generation specialists to
+            // propose_changes — half the wall-clock budget, wrong playbook,
+            // no article mandate. The model may only opt DOWN to
+            // 'investigate' (cheap read-only helpers); everything else is
+            // coerced back to the trigger's intent.
+            const isCron = !!task.trigger && task.trigger.startsWith('cron-')
+            if (isCron && taskIntent !== triggerDefault && taskIntent !== 'investigate') {
+              logger.warn('orchestrator_intent_coerced', {
+                taskId: task.id, specialistType: input.specialist_type,
+                wanted: taskIntent, coercedTo: triggerDefault,
+              })
+              taskIntent = triggerDefault
+            }
 
             const subTaskId = await createSubTask({
               parentTaskId:   task.id,

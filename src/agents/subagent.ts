@@ -97,6 +97,7 @@ const HARD_ITERATION_CAP = 15
 const TOOL_CALL_TIMEOUT_MS = 5 * 60_000
 
 async function toolCallWithTimeout(p: Promise<string>, toolName: string): Promise<string> {
+  const t0 = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
@@ -111,6 +112,10 @@ async function toolCallWithTimeout(p: Promise<string>, toolName: string): Promis
     ])
   } finally {
     if (timer) clearTimeout(timer)
+    // Slow-tool observability (2026-07-14: runs burned 20min on ~10 tool
+    // calls — 134s/call average — with no way to name the culprits).
+    const ms = Date.now() - t0
+    if (ms > 10_000) logger.warn('subagent_slow_tool_call', { toolName, ms })
   }
 }
 
