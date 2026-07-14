@@ -232,6 +232,49 @@ export async function publishItems(tenant: TenantConfig, itemIds: string[]): Pro
   })
 }
 
+// ── Reference fields (blog template parity) ────────────────────────────────
+
+export interface BlogRefFields {
+  /** field slug → MultiReference target collection id */
+  multiRefs: Record<string, string>
+  /** field slug → Option choices {id, name} */
+  options:   Record<string, Array<{ id: string; name: string }>>
+}
+
+/** Discover MultiReference + Option fields on the blog collection. */
+export async function resolveBlogRefFields(tenant: TenantConfig): Promise<BlogRefFields> {
+  const map = await resolveBlogFields(tenant)
+  const detail = await webflowRequest(tenant, 'GET', `/collections/${map.collectionId}`) as Record<string, unknown>
+  const fields = (detail.fields ?? []) as Array<Record<string, unknown>>
+  const out: BlogRefFields = { multiRefs: {}, options: {} }
+  for (const f of fields) {
+    const slug = String(f.slug ?? '')
+    const type = String(f.type ?? '')
+    const validations = (f.validations ?? {}) as Record<string, unknown>
+    if (type === 'MultiReference' && typeof validations.collectionId === 'string') {
+      out.multiRefs[slug] = validations.collectionId
+    }
+    if (type === 'Option' && Array.isArray(validations.options)) {
+      out.options[slug] = (validations.options as Array<Record<string, unknown>>)
+        .map(o => ({ id: String(o.id), name: String(o.name) }))
+    }
+  }
+  return out
+}
+
+/** List a referenced collection's items as {id, name} (first 100). */
+export async function listCollectionItemNames(
+  tenant: TenantConfig, collectionId: string,
+): Promise<Array<{ id: string; name: string }>> {
+  const raw = await webflowRequest(tenant, 'GET', `/collections/${collectionId}/items?limit=100`) as Record<string, unknown>
+  return ((raw.items ?? []) as Array<Record<string, unknown>>)
+    .map(i => ({
+      id:   String(i.id ?? ''),
+      name: String(((i.fieldData ?? {}) as Record<string, unknown>).name ?? ''),
+    }))
+    .filter(x => x.id && x.name)
+}
+
 // ── Static pages ────────────────────────────────────────────────────────────
 
 export interface WebflowPage {

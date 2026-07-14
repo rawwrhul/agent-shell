@@ -23,7 +23,34 @@ import { presenter } from '../../core/slack'
 import { getRun } from '../../core/slack/state-store'
 import { scoreAndMaybeRevise, qualityGateForAutonomousPublish } from '../surfer/revision'
 import { isFullyAutonomous, autoApproveAndExecute } from '../../hitl/autonomy'
+import { enrichArticleHtml, matchByTokenOverlap } from '../content-enrich'
 import * as wf from './client'
+
+/** Blog-template parity: resolve services/category/tag reference fields by
+ *  deterministic name-token overlap against the article title+keyword.
+ *  Fail-open — missing refs never block a publish. */
+async function resolveTemplateRefs(
+  tenant: Parameters<typeof wf.resolveBlogRefFields>[0],
+  matchText: string,
+): Promise<Record<string, unknown>> {
+  const extra: Record<string, unknown> = {}
+  try {
+    const refs = await wf.resolveBlogRefFields(tenant)
+    for (const [slug, collectionId] of Object.entries(refs.multiRefs)) {
+      const candidates = await wf.listCollectionItemNames(tenant, collectionId).catch(() => [])
+      const maxPicks = slug.includes('categor') ? 1 : 3
+      const picks = matchByTokenOverlap(matchText, candidates, maxPicks)
+      if (picks.length > 0) extra[slug] = picks
+    }
+    for (const [slug, options] of Object.entries(refs.options)) {
+      const picks = matchByTokenOverlap(matchText, options, 1)
+      if (picks.length > 0) extra[slug] = picks[0]
+    }
+  } catch (err) {
+    logger.warn('webflow_template_refs_failed', { tenantId: tenant.tenantId, err: String(err).slice(0, 160) })
+  }
+  return extra
+}
 
 // ── shared verify helper ────────────────────────────────────────────────────
 
@@ -178,17 +205,35 @@ export async function execWebflowApproveBlogPitch(
       reviewNote   = revision.note
     }
 
+    // Post-gate enrichment: byline + in-body Pexels images. Runs AFTER
+    // scoring so the gate judged the words, and the polish never distorts
+    // the verdict. Fails open.
+    draftContent = await enrichArticleHtml({
+      tenant: ctx.tenant, title: input.title,
+      keyword: input.targetKeyword ?? input.title, content: draftContent,
+    }).catch(() => draftContent)
+
     // Create the DRAFT CMS item with mapped fields.
     const map = await wf.resolveBlogFields(ctx.tenant)
     if (!map.bodyField) {
       return { ok: false, summary: 'approve_blog_pitch error: could not resolve a RichText body field on the Webflow blog collection',
                error: 'webflow_body_field_unresolved' }
     }
+
+    // Blog-template parity: category/services/tag refs + summary/meta fields,
+    // so agent posts render like human posts on the listing page (2026-07-14:
+    // missing blog-category showed "No items found." chips on the live blog).
+    const refFields = await resolveTemplateRefs(ctx.tenant, `${input.title} ${input.targetKeyword ?? ''}`)
+    const plainText = draftContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const summary = plainText.length > 220 ? `${plainText.slice(0, 217).replace(/\s+\S*$/, '')}…` : plainText
+
     const fieldData: Record<string, unknown> = {
+      ...refFields,
       [map.titleField]: input.title,
       [map.slugField]:  input.slug.trim().replace(/^\/+|\/+$/g, ''),
       [map.bodyField]:  draftContent,
     }
+    if (map.metaDescField && !fieldData[map.metaDescField]) fieldData[map.metaDescField] = summary
     if (input.imageUrl && map.imageField) {
       fieldData[map.imageField] = { url: input.imageUrl, alt: input.title }
     }

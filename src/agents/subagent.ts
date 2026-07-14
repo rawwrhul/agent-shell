@@ -740,6 +740,7 @@ When you write the **proposedAction** for a propose_action call:
 - Plain English. Avoid SEO jargon unless you also explain it in context (or skip the jargon and describe the impact).
 - Don't narrate your own mechanics. Don't say "I'll propose this for approval" or "publish to preview so it goes live once you approve" — the Slack card and approval flow are obvious from context.
 - Specific, not generic. "Add an FAQ section about pricing on the homepage" beats "Improve homepage content."
+- In article bodies: bold the exact target keyword AT MOST once. Repeated bolded exact-match phrases ("**level 2 asp electrical**" eight times) read robotic, hurt trust, and flag over-optimization. Use natural variants; format for the reader.
 
 Examples:
 
@@ -808,9 +809,9 @@ B.2  Re-read the 2-3 highest-traffic posts from A.2. They ARE the voice and stru
 
 B.3  Write the post in full — title + slug + content. ${isWebflowCms
   ? `Content is standard rich-text HTML for Webflow's body field: <p>, <h2>, <h3>, <strong>, <ul>, <li>, <a>.`
-  : `Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>.`} Headline should map to the validated query cluster from A.5.
+  : `Content is HTML in Framer's formattedText format: <p dir="auto">, <h2>, <strong>, <ul>, <li>.`} Headline should map to the validated query cluster from A.5. LENGTH IS NON-NEGOTIABLE: write to the word-count target from the B.1b guidelines (server-side validation enforces ~80% of the minimum, and the publish gate scores against the same SERP — a 700-word draft against a 2,000-word SERP scores ~15/100 and gets discarded no matter how well written). Hit the target with genuine depth: concrete costs, timelines, step-by-steps, FAQs — never filler.
 
-B.4  Embed 2-4 internal links to other ${tenant.clientName} posts where the cross-reference is genuinely useful (not gratuitous). Format: <a href="${cmsPrefix}SLUG">descriptive anchor text</a> — anchor text is a real noun phrase from the sentence. Prefer linking to the existing high-traffic posts from A.2 (they're already ranking; pass authority).
+B.4  Embed 2-4 internal links where the cross-reference is genuinely useful (not gratuitous). Mix TWO target types: other blog posts (<a href="${cmsPrefix}SLUG">…</a>, slugs from ${cmsListTool}) AND the site's deep SERVICE pages when the sentence mentions that service (e.g. a sentence about switchboard work links to the switchboard-upgrades service page — find real paths via ${isWebflowCms ? 'webflow_list_pages' : 'the crawled page inventory'}). NEVER link to the bare homepage from body copy — deep pages only. Anchor text is a real noun phrase from the sentence. Prefer high-traffic targets from A.2 (they're already ranking; pass authority).
 
 B.5  Call pexels_search with a 2-4 word CONCRETE-NOUN query that reflects the post subject. Avoid abstract phrases. Pick the most editorially-relevant result. Use the "url_for_post" field — landscape-cropped URL ready for the CMS.
 

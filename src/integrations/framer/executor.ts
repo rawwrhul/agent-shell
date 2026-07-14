@@ -340,6 +340,7 @@ import { presenter } from '../../core/slack'
 import { getRun } from '../../core/slack/state-store'
 import { scoreAndMaybeRevise, qualityGateForAutonomousPublish } from '../surfer/revision'
 import { isFullyAutonomous, autoApproveAndExecute } from '../../hitl/autonomy'
+import { enrichArticleHtml } from '../content-enrich'
 
 export interface ApproveBlogPitchInput {
   slug:        string
@@ -435,6 +436,12 @@ export async function execApproveBlogPitch(
       draftContent = revision.content
       reviewNote   = revision.note
     }
+
+    // Post-gate enrichment: byline + in-body Pexels images (fails open).
+    draftContent = await enrichArticleHtml({
+      tenant: ctx.tenant, title: input.title,
+      keyword: input.targetKeyword ?? input.title, content: draftContent,
+    }).catch(() => draftContent)
 
     // 1. Create the Framer draft (writes CMS item, gets confirmationHash)
     const draft = await fr.draftAndPreviewBlogPost(ctx.tenant, {
