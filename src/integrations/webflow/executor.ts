@@ -224,7 +224,11 @@ export async function execWebflowApproveBlogPitch(
     // so agent posts render like human posts on the listing page (2026-07-14:
     // missing blog-category showed "No items found." chips on the live blog).
     const refFields = await resolveTemplateRefs(ctx.tenant, `${input.title} ${input.targetKeyword ?? ''}`)
-    const plainText = draftContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    // Summary crop EXCLUDES the enrichment byline (learned live: a byline-led
+    // card description reads as a formatting bug on the listing page).
+    const plainText = draftContent
+      .replace(/<p><em>Written by[\s\S]*?<\/em><\/p>/i, '')
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
     const summary = plainText.length > 220 ? `${plainText.slice(0, 217).replace(/\s+\S*$/, '')}…` : plainText
 
     const fieldData: Record<string, unknown> = {

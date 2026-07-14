@@ -110,8 +110,9 @@ export async function enrichArticleHtml(args: {
     logger.warn('article_enrich_images_failed', { tenantId: args.tenant.tenantId, err: String(err).slice(0, 160) })
   }
 
-  // 2. Byline block at top.
+  // 2. Byline block at top (idempotent — never doubles up).
   try {
+    if (html.includes('Written by')) return html
     const mem = await getMemoryByKey(args.tenant.tenantId, 'preference', 'article-author')
     if (mem?.value) {
       const author = JSON.parse(mem.value) as { name?: string; title?: string; licence?: string }
