@@ -489,9 +489,31 @@ export async function qualityGateForAutonomousPublish(args: {
             logger.warn('surfer_auto_optimize_stripped_links', {
               keyword: args.keyword, editorId: first.editorId, linkCount,
             })
+          } else if (opt.score >= threshold - 8) {
+            // NEAR MISS after optimization — one targeted LLM revision of
+            // the OPTIMIZED content, then a free re-score, before giving up.
+            const nudged = await reviseContent({
+              model: args.model, keyword: args.keyword, content: optimized,
+              scoreBefore: opt.score, threshold,
+            })
+            const re = nudged ? await rescoreContentV2(first.editorId, nudged).catch(() => null) : null
+            const reScore = re ? (re.seo ?? re.total) : null
+            const reLinks = nudged ? (nudged.match(/<a\s+href=/gi) ?? []).length : 0
+            if (reScore !== null && gateVerdict(reScore, threshold) && reLinks >= 2 && nudged) {
+              return {
+                content: nudged, available: true, passed: true,
+                scoreBefore, scoreAfter: reScore, humanized: false, revised: true, threshold,
+                note: `Surfer ${scoreBefore}→${opt.score}→${reScore}/100 (target ${threshold}, auto-optimized + revised) ✓ auto-publish`,
+              }
+            }
+            return {
+              content: args.content, available: true, passed: false,
+              scoreBefore, scoreAfter: reScore ?? opt.score, humanized: false, revised: true, threshold,
+              note: `Surfer ${scoreBefore}→${opt.score}${reScore !== null ? `→${reScore}` : ''}/100 below target ${threshold} after auto-optimize + revision`,
+            }
           } else {
-            // Even Surfer's own optimizer couldn't reach the bar — the topic/
-            // draft is structurally short of the SERP. Discard with evidence.
+            // Even Surfer's own optimizer couldn't get close — the draft is
+            // structurally short of the SERP. Discard with evidence.
             return {
               content: args.content, available: true, passed: false,
               scoreBefore, scoreAfter: opt.score, humanized: false, revised: true, threshold,
@@ -563,13 +585,38 @@ export async function qualityGateForAutonomousPublish(args: {
     const after = revisedContent
       ? await rubricScore({ model: args.model, keyword: args.keyword, content: revisedContent })
       : null
-    const scoreAfter  = after?.score ?? null
-    const keepRevised = scoreAfter !== null && scoreAfter >= scoreBefore
-    const finalScore  = keepRevised ? scoreAfter : scoreBefore
-    const passed      = gateVerdict(finalScore, threshold)
+    let scoreAfter  = after?.score ?? null
+    let keepRevised = scoreAfter !== null && scoreAfter >= scoreBefore
+    let bestContent = keepRevised && revisedContent ? revisedContent : args.content
+    let finalScore  = keepRevised ? (scoreAfter as number) : scoreBefore
+    let trajectory  = `${scoreBefore}${scoreAfter !== null ? `→${scoreAfter}` : ''}`
 
+    // NEAR MISS: within 8 points with a concrete criticism → one more
+    // TARGETED revision (2026-07-14: a 74/75 discard whose reason named the
+    // exact missing detail is waste, not quality control).
+    if (!gateVerdict(finalScore, threshold) && finalScore >= threshold - 8) {
+      const critique = after?.reasons || before.reasons
+      if (critique) {
+        const second = await reviseContent({
+          model: args.model, keyword: args.keyword, content: bestContent,
+          scoreBefore: finalScore, threshold, reasons: critique,
+        })
+        const re = second
+          ? await rubricScore({ model: args.model, keyword: args.keyword, content: second })
+          : null
+        if (re?.score !== null && re !== null && re.score >= finalScore && second) {
+          bestContent = second
+          finalScore  = re.score
+          scoreAfter  = re.score
+          keepRevised = true
+          trajectory += `→${re.score}`
+        }
+      }
+    }
+
+    const passed = gateVerdict(finalScore, threshold)
     return {
-      content:    keepRevised && revisedContent ? revisedContent : args.content,
+      content:    bestContent,
       available:  true,
       passed,
       scoreBefore,
@@ -578,8 +625,8 @@ export async function qualityGateForAutonomousPublish(args: {
       revised:    keepRevised,
       threshold,
       note: passed
-        ? `Rubric ${scoreBefore}→${finalScore}/100 (target ${threshold}, revised, Surfer unavailable) ✓ auto-publish`
-        : `Rubric ${scoreBefore}${scoreAfter !== null ? `→${scoreAfter}` : ''}/100 below target ${threshold}${before.reasons ? ` — ${before.reasons}` : ''}`,
+        ? `Rubric ${trajectory}/100 (target ${threshold}, revised, Surfer unavailable) ✓ auto-publish`
+        : `Rubric ${trajectory}/100 below target ${threshold}${before.reasons ? ` — ${before.reasons}` : ''}`,
     }
   } catch (err) {
     logger.info('quality_gate_degraded', { keyword: args.keyword, err: String(err).slice(0, 200) })
