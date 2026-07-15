@@ -251,7 +251,18 @@ export async function execWebflowApproveBlogPitch(
     if (input.imageUrl && map.imageField) {
       fieldData[map.imageField] = { url: input.imageUrl, alt: input.title }
     }
-    const draft = await wf.createDraftItem(ctx.tenant, fieldData)
+    // Slug idempotency (2026-07-15: a retried pitch job created THREE items —
+    // Webflow auto-suffixes duplicate slugs, putting -2/-3 copies live).
+    // If an item with this slug already exists, UPDATE it instead of creating.
+    const existing = await wf.getItemBySlug(ctx.tenant, input.slug).catch(() => null)
+    const draft = existing
+      ? await wf.updateItemFields(ctx.tenant, existing.id, fieldData)
+      : await wf.createDraftItem(ctx.tenant, fieldData)
+    if (existing) {
+      logger.info('webflow_pitch_reused_existing_item', {
+        tenantId: ctx.tenant.tenantId, slug: input.slug, itemId: existing.id,
+      })
+    }
     if (!draft.id) {
       return { ok: false, summary: 'approve_blog_pitch error: Webflow draft creation returned no item id',
                error: 'webflow_draft_create_no_id' }
