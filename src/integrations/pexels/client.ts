@@ -64,10 +64,20 @@ export async function searchPexelsPhotos(opts: PexelsSearchOptions): Promise<Pex
   if (opts.page)        params.set('page', String(opts.page))
 
   const url = `${PEXELS_BASE}/search?${params.toString()}`
-  const res = await fetch(url, {
-    method:  'GET',
-    headers: { Authorization: apiKey() },
-  })
+  // 15s abort — 2026-07-15: an unbounded fetch here hung a publish executor
+  // for 2 hours after the article had already PASSED its quality gate.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method:  'GET',
+      headers: { Authorization: apiKey() },
+      signal:  controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(`Pexels search failed: HTTP ${res.status} ${res.statusText} — ${body.slice(0, 200)}`)

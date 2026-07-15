@@ -153,10 +153,20 @@ async function processJob(job: Job<ExecutionJobPayload>): Promise<void> {
 
   const ctx: IntegrationContext = { tenant, taskId, approvalId }
 
-  // 3) Dispatch to integration handler
+  // 3) Dispatch to integration handler — with a hard ceiling. 2026-07-15:
+  // a publish executor hung 2h on an unbounded vendor fetch AFTER passing
+  // its quality gate. Article executors legitimately run long (Surfer
+  // scoring + auto-optimize ≈ 15-20 min); 30 min is the backstop.
+  const EXECUTOR_TIMEOUT_MS = 30 * 60_000
   let result
   try {
-    result = await dispatchExecution(toolName, toolInput, ctx)
+    result = await Promise.race([
+      dispatchExecution(toolName, toolInput, ctx),
+      new Promise<never>((_, reject) => {
+        const t = setTimeout(() => reject(new Error(`executor_timeout: ${toolName} exceeded ${EXECUTOR_TIMEOUT_MS / 60000}min`)), EXECUTOR_TIMEOUT_MS)
+        if (typeof t.unref === 'function') t.unref()
+      }),
+    ])
   } catch (err) {
     const errStr = String(err).slice(0, 500)
     await markFailed(approvalId, taskId, toolName, errStr)
