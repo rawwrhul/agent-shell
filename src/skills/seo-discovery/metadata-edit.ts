@@ -21,6 +21,7 @@ import { buildClusterFitResolver } from './cluster-fit'
 import { buildConversionRateResolver } from './conversion-rate'
 import { fileScoredOpportunity } from './file-opportunity'
 import { loadRankingRows, groupByPage, round2, round4 } from './common'
+import { buildGapResolverForTenant } from '../seo-keyword-gap'
 
 const ACTION = 'metadata_edit' as const
 const MAX_POSITION = 30
@@ -56,9 +57,10 @@ export async function runMetadataEditCycle(tenantId: string): Promise<MetadataEd
     return result
   }
 
-  const [clusterFit, convRate] = await Promise.all([
+  const [clusterFit, convRate, gapResolver] = await Promise.all([
     buildClusterFitResolver(tenantId),
     buildConversionRateResolver(tenantId),
+    buildGapResolverForTenant(tenantId),
   ])
 
   let rows
@@ -102,6 +104,10 @@ export async function runMetadataEditCycle(tenantId: string): Promise<MetadataEd
     const dominant = c.gaps[0]
     const path = c.pageUrl.replace(/^https?:\/\/[^/]+/, '') || '/'
     const gapWord = c.gaps.length === 1 ? 'query' : 'queries'
+    // Attack terms: gap keywords in the same strategy cluster as this page's
+    // dominant query — terms the page SHOULD rank for but holds nothing on.
+    // Carried in detail so the drafting agent can fold them into title/meta.
+    const attack = gapResolver.gapKeywordsFor(dominant.keyword, 3)
     const res = await fileScoredOpportunity({
       tenantId, runId, action: ACTION, target: c.pageUrl, keyword: dominant.keyword,
       clusterFitKeywords: c.gaps.map((g) => ({ keyword: g.keyword, weight: g.ev })),
@@ -111,7 +117,10 @@ export async function runMetadataEditCycle(tenantId: string): Promise<MetadataEd
         `Page ranks for ${c.gaps.length} ${gapWord} in striking distance with CTR below curve. ` +
         `Biggest gap: "${dominant.keyword}" at ~#${dominant.pos.toFixed(1)}, ` +
         `${(dominant.actualCtr * 100).toFixed(1)}% vs ~${(dominant.expectedCtr * 100).toFixed(1)}% expected. ` +
-        `Title/meta is the page-level lever.`,
+        `Title/meta is the page-level lever.` +
+        (attack.length
+          ? ` ALSO target (competitor-gap terms in this cluster we rank NOTHING for): ${attack.map((a) => `"${a.keyword}" (${a.volume}/mo)`).join(', ')}.`
+          : ''),
       detail: {
         page_impressions: c.pageImpressions,
         gap_count: c.gaps.length,
@@ -119,6 +128,10 @@ export async function runMetadataEditCycle(tenantId: string): Promise<MetadataEd
         top_keywords: c.gaps.slice(0, 5).map((g) => ({
           keyword: g.keyword, position: round2(g.pos), impressions: g.impressions,
           actual_ctr: round4(g.actualCtr), expected_ctr: round4(g.expectedCtr), ev_clicks: round2(g.ev),
+        })),
+        secondary_gap_keywords: attack.map((a) => ({
+          keyword: a.keyword, volume: a.volume, competitor_position: a.bestCompetitorPos,
+          competitor: a.competitorDomains[0] ?? null,
         })),
       },
     }, { clusterFit, convRate, cmsPathPrefixes: tenant.cmsPathPrefixes })

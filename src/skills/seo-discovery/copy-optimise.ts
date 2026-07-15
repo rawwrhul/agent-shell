@@ -22,6 +22,7 @@ import { buildClusterFitResolver } from './cluster-fit'
 import { buildConversionRateResolver } from './conversion-rate'
 import { fileScoredOpportunity } from './file-opportunity'
 import { loadRankingRows, groupByPage, round2 } from './common'
+import { buildGapResolverForTenant } from '../seo-keyword-gap'
 
 const ACTION = 'copy_optimise' as const
 const MIN_POSITION = 5
@@ -57,9 +58,10 @@ export async function runCopyOptimiseCycle(tenantId: string): Promise<CopyOptimi
     return result
   }
 
-  const [clusterFit, convRate] = await Promise.all([
+  const [clusterFit, convRate, gapResolver] = await Promise.all([
     buildClusterFitResolver(tenantId),
     buildConversionRateResolver(tenantId),
+    buildGapResolverForTenant(tenantId),
   ])
 
   let rows
@@ -99,6 +101,10 @@ export async function runCopyOptimiseCycle(tenantId: string): Promise<CopyOptimi
     const dominant = c.queries[0]
     const path = c.pageUrl.replace(/^https?:\/\/[^/]+/, '') || '/'
     const qWord = c.queries.length === 1 ? 'query' : 'queries'
+    // Attack terms: same-cluster competitor-gap keywords the page holds
+    // nothing on. Copy depth is exactly the lever that can capture them —
+    // the drafting agent should weave these into the strengthened sections.
+    const attack = gapResolver.gapKeywordsFor(dominant.keyword, 5)
     const res = await fileScoredOpportunity({
       tenantId, runId, action: ACTION, target: c.pageUrl, keyword: dominant.keyword,
       clusterFitKeywords: c.queries.map((q) => ({ keyword: q.keyword, weight: q.ev })),
@@ -107,13 +113,20 @@ export async function runCopyOptimiseCycle(tenantId: string): Promise<CopyOptimi
       rationale:
         `Page has a foothold on ${c.queries.length} ${qWord} ranking 5-30 with room to climb. ` +
         `Biggest: "${dominant.keyword}" at ~#${dominant.pos.toFixed(1)}, ${dominant.impressions} impr. ` +
-        `Body depth/relevance is the lever to push position.`,
+        `Body depth/relevance is the lever to push position.` +
+        (attack.length
+          ? ` ALSO cover (competitor-gap terms in this cluster we rank NOTHING for): ${attack.map((a) => `"${a.keyword}" (${a.volume}/mo, competitor #${a.bestCompetitorPos})`).join(', ')}.`
+          : ''),
       detail: {
         page_impressions: c.pageImpressions,
         query_count: c.queries.length,
         dominant_keyword: dominant.keyword,
         top_keywords: c.queries.slice(0, 5).map((q) => ({
           keyword: q.keyword, position: round2(q.pos), impressions: q.impressions, ev_clicks: round2(q.ev),
+        })),
+        secondary_gap_keywords: attack.map((a) => ({
+          keyword: a.keyword, volume: a.volume, competitor_position: a.bestCompetitorPos,
+          competitor: a.competitorDomains[0] ?? null,
         })),
       },
     }, { clusterFit, convRate, cmsPathPrefixes: tenant.cmsPathPrefixes })

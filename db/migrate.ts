@@ -18,6 +18,7 @@ import { runGoogleAdsMigration } from './migrations/google-ads'
 import { runTenantAutonomyMigration } from './migrations/tenant-autonomy'
 import { runDailyDigestsMigration } from './migrations/daily-digests'
 import { runWebflowTenantMigration } from './migrations/webflow-tenant'
+import { runKeywordGapMigration } from './migrations/keyword-gap'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -324,6 +325,7 @@ async function migrate() {
   await runTenantAutonomyMigration(pool)
   await runDailyDigestsMigration(pool)
   await runWebflowTenantMigration(pool)
+  await runKeywordGapMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

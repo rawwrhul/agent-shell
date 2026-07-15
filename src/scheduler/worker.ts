@@ -30,6 +30,7 @@ import { getTenant } from '../tenants/registry'
 import type { TenantConfig } from '../tenants/types'
 import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
+import { runKeywordGapCycle } from '../skills/seo-keyword-gap';
 import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
 import { runStrategyRefreshCycle } from '../core/strategy/refresh';
 import { runMetadataEditCycle } from '../skills/seo-discovery';
@@ -159,6 +160,25 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
       logger.info('backlink_prospect_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('backlink_prospect_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // keyword_gap origination cycle — Ahrefs competitor organic keywords vs our
+  // GSC surface -> seo.keyword_gap. Silent; strategy refresh + copy/meta
+  // discovery consume the rows. No-op (logged) when competitor_domains empty.
+  if (runKind === 'keyword_gap') {
+    logger.info('keyword_gap_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await withTimeout(runKeywordGapCycle(tenantId), 'keyword_gap');
+      logger.info('keyword_gap_cycle_completed_from_worker', {
+        tenantId, competitorsScanned: r.competitorsScanned, gapsFound: r.gapsFound, written: r.written, errors: r.errors,
+      });
+    } catch (err) {
+      logger.error('keyword_gap_cycle_failed_from_worker', {
         tenantId, err: String(err).slice(0, 500),
       });
     }

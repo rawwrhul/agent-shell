@@ -13,7 +13,10 @@
 // 'daily_digest' — deterministic end-of-day record (actions + links,
 // articles, discards, outcomes, GSC summary) written to daily_digests.
 // DB-only; sends nothing.
-export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create' | 'outcome_score' | 'daily_digest'
+// 'keyword_gap' — origination layer: Ahrefs competitor organic keywords
+// diffed against our GSC surface -> seo.keyword_gap. Feeds strategy refresh
+// (attack clusters) and copy/meta discovery (secondary targeting). Silent.
+export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create' | 'outcome_score' | 'daily_digest' | 'keyword_gap'
 
 export interface TenantSchedule {
   tenantId:    string

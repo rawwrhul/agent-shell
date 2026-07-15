@@ -26,6 +26,7 @@ import { listClusters } from '../../seo/data-store'
 import { queryMemory } from '../../memory/runtime'
 import { normalizeStrategyCore } from './normalize'
 import { saveStrategyDoc, getLatestStrategy, applyClusterDispositions } from './store'
+import { gatherKeywordGapContext } from '../../skills/seo-keyword-gap'
 import { STRATEGY_MIN_AGE_DAYS, CLUSTER_DISPOSITIONS } from './types'
 
 export interface StrategyRefreshOpts {
@@ -79,10 +80,14 @@ export async function runStrategyRefreshCycle(
   // and misses commercial head terms already ranking. Brand terms filtered out.
   const rankingSurface = (await safe(() => gatherRankingSurface(tenantId, brandTokens(tenant)))) ?? ''
 
-  // GATHER VENDOR HOOK (2b): live Ahrefs organic_competitors / backlink_gap,
-  // DataForSEO SERP, Surfer content guidelines per priority cluster — all via
-  // cachedJson under the per-sweep unit budget. Wired + gather-tested in 2b.
-  const vendorContext = ''
+  // GATHER VENDOR HOOK (2b), first wire (2026-07-15): the keyword gap.
+  // Aspiration to complement the demonstrated demand above — keywords
+  // competitors rank top-20 for that we hold NOTHING on (seo.keyword_gap,
+  // written by the keyword_gap cycle from Ahrefs). This is what lets the
+  // strategist author ATTACK clusters instead of only defending the surface
+  // we already have. Remaining 2b candidates: DataForSEO SERP, Surfer
+  // guidelines per priority cluster.
+  const vendorContext = (await safe(() => gatherKeywordGapContext(tenantId))) ?? ''
 
   const coldStart = opts.coldStart ?? (latest === null)
 
