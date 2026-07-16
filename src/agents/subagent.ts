@@ -746,6 +746,7 @@ When you write the **proposedAction** for a propose_action call:
 - Don't narrate your own mechanics. Don't say "I'll propose this for approval" or "publish to preview so it goes live once you approve" — the Slack card and approval flow are obvious from context.
 - Specific, not generic. "Add an FAQ section about pricing on the homepage" beats "Improve homepage content."
 - In article bodies: bold the exact target keyword AT MOST once. Repeated bolded exact-match phrases ("**level 2 asp electrical**" eight times) read robotic, hurt trust, and flag over-optimization. Use natural variants; format for the reader.
+- CONTACT DETAILS ARE FACTS, NOT COPY. Never write a phone number, email, or address in article content unless it exactly matches a verified tenant memory fact (e.g. 'contact-phone'). If no verified contact detail exists, omit it and link to the contact page instead. Invented phone numbers have shipped to live client sites — validation now rejects any unverified number.
 
 Examples:
 

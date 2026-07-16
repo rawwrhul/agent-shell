@@ -539,6 +539,38 @@ async function doProposeAction(input: Record<string, unknown>, ctx: SeoToolConte
         tenantId: ctx.tenantId, err: String(err).slice(0, 160),
       })
     }
+    // Invented-contact-details guard (2026-07-16: TWO live articles shipped
+    // with hallucinated 1300 numbers — 1300 074 737 and 1300 193 658 — that
+    // had to be corrected on the customer's site). Any phone-looking string
+    // in the draft must exactly match a verified tenant_memory fact
+    // ('contact-phone'). No verified phone on file -> no phone allowed at
+    // all: omit it and link the contact page instead. Fail-CLOSED: a wrong
+    // phone number on a client site is worse than a missing one.
+    try {
+      const PHONE_RE = /\b(?:1[38]00[ -]?\d{3}[ -]?\d{3}|0[2-9]\d{2}[ -]?\d{3}[ -]?\d{3}|\(0[2-9]\)[ -]?\d{4}[ -]?\d{4})\b/g
+      const plain = content.replace(/<[^>]+>/g, ' ')
+      const foundPhones = [...new Set((plain.match(PHONE_RE) ?? []).map((p) => p.replace(/[ -]/g, '')))]
+      if (foundPhones.length > 0) {
+        const { rows: phoneRows } = await pool().query<{ value: string }>(
+          `SELECT value FROM tenant_memory
+            WHERE tenant_id = $1 AND type = 'fact' AND key = 'contact-phone' LIMIT 1`,
+          [ctx.tenantId],
+        )
+        const verified = new Set(
+          (phoneRows[0]?.value.match(PHONE_RE) ?? []).map((p) => p.replace(/[ -]/g, '')),
+        )
+        const invented = foundPhones.filter((p) => !verified.has(p))
+        if (invented.length > 0) {
+          errors.push(
+            `PITCH_VALIDATION_FAILED: draft contains phone number(s) ${invented.join(', ')} that do NOT match the verified tenant contact number. NEVER invent contact details. ${verified.size > 0 ? `The only allowed phone number is the one in the tenant contact-phone fact.` : `No verified phone number is on file for this tenant — remove the phone number entirely and link to the contact page instead.`}`,
+          )
+        }
+      }
+    } catch (err) {
+      logger.warn('pitch_phone_guard_error', {
+        tenantId: ctx.tenantId, err: String(err).slice(0, 160),
+      })
+    }
     // Cannibalization guard: slug collision, near-duplicate title, and
     // target-keyword overlap against pages that already rank. Fail-open on
     // missing data; blocks only on positive evidence of overlap.
