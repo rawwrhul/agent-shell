@@ -3,7 +3,7 @@ import { startAllTenantBots } from './tenants/slackManager'
 import './queue/worker'
 import { logger } from './logger'
 
-import { bootstrapSchedules } from './scheduler'
+import { bootstrapSchedules, startScheduleReconciler } from './scheduler'
 import { startScheduleWorker } from './scheduler/worker'
 
 import http from 'http'
@@ -23,6 +23,10 @@ async function main() {
   await reapStrandedRuns(slackPool).catch(err =>
     logger.error('reaper_failed', { err: String(err).slice(0, 300) }))
   await bootstrapSchedules()
+  // Self-healing: every 15 min, diff tenant_schedules against Redis
+  // repeatables and re-register anything missing. A wiped schedule now
+  // costs at most one tick, not a silent dead morning (2026-07-16).
+  startScheduleReconciler()
   startScheduleWorker()
 
   const executionWorker = startExecutionWorker()

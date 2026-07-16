@@ -122,6 +122,44 @@ export async function bootstrapSchedules(): Promise<void> {
   logger.info('scheduler_bootstrapped', { count: schedules.length });
 }
 
+/**
+ * Periodic schedule reconciliation — the permanent fix for silent repeatable
+ * drift (2026-07-16: hd-seo's daily vanished from Redis after a queue drain
+ * and stayed gone until a manual force-bootstrap; the tenant lost its whole
+ * morning run). Redis is a CACHE of tenant_schedules, not the source of
+ * truth; anything that wipes or drifts it (drain scripts, obliterate,
+ * Redis eviction) must self-heal without a deploy or human.
+ *
+ * Every tick: diff desired repeatables against Redis. If anything is
+ * missing, log `schedule_drift_detected` LOUDLY (error level — this firing
+ * means something wiped Redis) and run the full bootstrapSchedules pass.
+ * Max exposure to a wiped schedule: one tick interval (default 15 min).
+ */
+export function startScheduleReconciler(intervalMs = 15 * 60_000): NodeJS.Timeout {
+  const tick = async (): Promise<void> => {
+    try {
+      const schedules = await listEnabledSchedules()
+      const desired = schedules
+        .filter(s => s.runKind !== 'weekly')
+        .map(s => repeatableJobIdFor(s))
+      const existing = new Set((await queue().getRepeatableJobs()).map(j => j.id).filter(Boolean))
+      const missing = desired.filter(id => !existing.has(id))
+      if (missing.length === 0) return
+      logger.error('schedule_drift_detected', {
+        missing,
+        hint: 'Repeatables vanished from Redis (drain/obliterate/eviction). Re-registering now — but find what wiped them.',
+      })
+      await bootstrapSchedules()
+    } catch (err) {
+      logger.warn('schedule_reconcile_tick_failed', { err: String(err).slice(0, 300) })
+    }
+  }
+  const timer = setInterval(() => { void tick() }, intervalMs)
+  if (typeof timer.unref === 'function') timer.unref()
+  logger.info('schedule_reconciler_started', { intervalMs })
+  return timer
+}
+
 async function registerPendingNudgeScan(): Promise<void> {
   const jobId = 'global:pending-nudge-scan';
   const repeatOpts: RepeatOptions = {
