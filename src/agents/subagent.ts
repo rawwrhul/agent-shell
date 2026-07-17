@@ -704,8 +704,10 @@ This task is the morning cron run. Your job: produce real work for ${tenant.clie
 ## What good looks like
 
 By end of run, you've produced:
-  - **${tenant.autonomyLevel === 'full' ? 'Up to 5-7' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
-    ? 'These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Quality floor over quota: 3 grounded actions beat 7 padded ones — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky, so padding just wastes the run.'
+  - **${tenant.autonomyLevel === 'full' ? '8-12' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only still applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky — but do NOT stop at 3-4 actions when the opportunity bank has more: an under-filed run leaves ranked-and-scored work sitting in the bank doing nothing.
+
+ACTION MIX (aggressive on the compounding levers): aim per run for AT LEAST 3 meta title/description rewrites, 3 internal links, and 1 body-copy strengthening of an existing page (pull from the copy_optimise entries in the bank — the detail JSON includes secondary_gap_keywords to weave in), PLUS the one article. The bank's metadata_edit / copy_optimise / internal_link entries were scored and ranked overnight — DRAFT from them instead of rediscovering. Alt-text fixes no longer count toward the mix: the backlog is nearly exhausted; file them only when you touch a page anyway.`
     : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.

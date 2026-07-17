@@ -21,7 +21,8 @@ import { evStrikingDistance } from '../../core/opportunity-bank/scoring'
 import { buildClusterFitResolver } from './cluster-fit'
 import { buildConversionRateResolver } from './conversion-rate'
 import { fileScoredOpportunity } from './file-opportunity'
-import { loadRankingRows, groupByPage, round2 } from './common'
+import { groupByPage, round2 } from './common'
+import { loadRankingRowsOrFallback } from './ahrefs-fallback'
 import { buildGapResolverForTenant } from '../seo-keyword-gap'
 
 const ACTION = 'copy_optimise' as const
@@ -66,7 +67,7 @@ export async function runCopyOptimiseCycle(tenantId: string): Promise<CopyOptimi
 
   let rows
   try {
-    rows = await loadRankingRows(tenantId)
+    rows = await loadRankingRowsOrFallback(tenant)
   } catch (err) {
     result.errors.push(`query_failed: ${String(err).slice(0, 150)}`)
     logger.error('copy_optimise_query_failed', { tenantId, err: String(err).slice(0, 300) })

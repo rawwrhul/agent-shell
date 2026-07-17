@@ -22,7 +22,8 @@ import { evStrikingDistance } from '../../core/opportunity-bank/scoring'
 import { buildClusterFitResolver } from './cluster-fit'
 import { buildConversionRateResolver } from './conversion-rate'
 import { fileScoredOpportunity } from './file-opportunity'
-import { loadRankingRows, groupByPage, round2 } from './common'
+import { groupByPage, round2 } from './common'
+import { loadRankingRowsOrFallback } from './ahrefs-fallback'
 
 const ACTION = 'internal_link' as const
 const MIN_POSITION = 5
@@ -100,7 +101,7 @@ export async function runInternalLinkCycle(tenantId: string): Promise<InternalLi
 
   let rows
   try {
-    rows = await loadRankingRows(tenantId)
+    rows = await loadRankingRowsOrFallback(tenant)
   } catch (err) {
     result.errors.push(`ranking_query_failed: ${String(err).slice(0, 120)}`)
     logger.error('internal_link_ranking_failed', { tenantId, err: String(err).slice(0, 200) })
