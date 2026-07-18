@@ -43,6 +43,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
   const specialists = getSpecialists(tenant.agentType)
   const spawnedIds: string[] = []
+  const MAX_SUBAGENTS_PER_TASK = Number(process.env.MAX_SUBAGENTS_PER_TASK ?? '4')
 
   // Pull the tenant's memory context. Best-effort.
   let memoryPrompt = ''
@@ -108,7 +109,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
     },
   ]
 
-  const baseSystem = buildOrchestratorSystem(task, tenant, specialists)
+  const baseSystem = buildOrchestratorSystem(task, tenant, specialists, MAX_SUBAGENTS_PER_TASK)
   const system = memoryPrompt ? `${memoryPrompt}\n\n${baseSystem}` : baseSystem
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: buildOrchestratorPrompt(task) }]
 
@@ -141,6 +142,27 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
             if (!spec) {
               results.push({ type: 'tool_result', tool_use_id: tb.id, content: `Unknown specialist type: ${input.specialist_type}` })
+              continue
+            }
+
+            // FAN-OUT CAP (2026-07-17). Measured over 4 days: 68% of ALL
+            // token spend came from subagents that filed NOTHING — one task
+            // spawned 23 specialists, 17 of which produced zero output
+            // (3.3M tokens). Parallel specialists re-read the same context,
+            // duplicate each other's discovery, then get clipped by the
+            // wall-clock before filing. More specialists ≠ more work; past
+            // ~4 they actively destroy the run by starving each other.
+            // Hard cap here rather than in the prompt: the model does not
+            // reliably self-limit.
+            if (spawnedIds.length >= MAX_SUBAGENTS_PER_TASK) {
+              logger.warn('orchestrator_fanout_capped', {
+                taskId: task.id, tenantId: task.tenantId,
+                requested: input.specialist_type, cap: MAX_SUBAGENTS_PER_TASK,
+              })
+              results.push({
+                type: 'tool_result', tool_use_id: tb.id,
+                content: `FAN_OUT_CAP_REACHED: ${MAX_SUBAGENTS_PER_TASK} specialists already spawned — that is the maximum for one task. Do NOT try to spawn more. The specialists already running cover this task; give them the full budget instead of splitting it. Call complete_planning now.`,
+              })
               continue
             }
 
@@ -240,7 +262,7 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
 // ── Prompt builders ───────────────────────────────────────────────────────────
 
-function buildOrchestratorSystem(task: AgentTask, tenant: TenantConfig, specialists: ReturnType<typeof getSpecialists>): string {
+function buildOrchestratorSystem(task: AgentTask, tenant: TenantConfig, specialists: ReturnType<typeof getSpecialists>, maxSubagents = 4): string {
   const specList = specialists.map(s =>
     `**${s.type}** — ${s.description}`
   ).join('\n')
@@ -257,6 +279,20 @@ The person reading the final output is ${tenant.clientName}'s operator — they 
 
 ## Available specialists
 ${specList}
+
+## HOW MANY specialists to spawn — read this before you spawn anything
+
+**Spawn the FEWEST specialists that can do the job. The hard limit is ${maxSubagents} per task; the right number is usually 2-3.**
+
+This is not a style preference, it is measured fact. Over 4 days of production runs, 68% of ALL token spend came from specialists that filed NOTHING. One task spawned 23 specialists; 17 produced zero output. Here is why splitting work destroys it:
+
+- Every specialist re-reads the same site data, the same rankings, the same memory. Five specialists = five copies of the same expensive context.
+- Specialists cannot see each other's work, so they duplicate each other's findings and file overlapping changes.
+- They share one wall-clock. Five specialists each get one fifth of the time and ALL of them get clipped mid-task, so you get five half-finished nothings instead of two finished somethings.
+
+One specialist with a 6-step checklist beats three specialists with 2-step checklists every time. When you catch yourself thinking "I'll spawn one more to also handle X" — don't. Add X as a step in an existing specialist's checklist instead.
+
+Spawn a SECOND specialist only when the work is genuinely independent AND cannot share context (e.g. one writes an article, one does on-page fixes). Spawn a THIRD only if the request explicitly spans three unrelated areas. There is essentially never a good reason for a fourth.
 
 ## Inferring scope from the request
 
