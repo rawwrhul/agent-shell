@@ -136,7 +136,21 @@ const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
 async function callAnthropicWithRetry(
   params: Anthropic.MessageCreateParamsNonStreaming,
 ): Promise<Anthropic.Message> {
-  return callAnthropic(anthropic, params, { label: 'subagent' })
+  // Idle-timeout tuning (2026-07-19). The recurring subagent killer was
+  // `IdleTimeoutError: anthropic stream idle for 60000ms` — it took out the
+  // whole afternoon article run (3/3 subagents). Root cause: 60s idle was
+  // too tight for heavy generation turns. A full article draft (thousands of
+  // output tokens, often with extended thinking) can legitimately go quiet
+  // for >60s between stream events when the API is under load — and because
+  // a retry restarts the generation from scratch, all 3 attempts hit the
+  // same wall at the same place and the subagent dies. 180s idle window +
+  // 5 attempts gives long generations room to breathe while still killing a
+  // genuinely dead connection (which stays silent indefinitely).
+  return callAnthropic(anthropic, params, {
+    label: 'subagent',
+    idleTimeoutMs: 180_000,
+    maxRetries: 5,
+  })
 }
 
 // ── Tool builders ─────────────────────────────────────────────────────────
