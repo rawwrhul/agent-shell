@@ -63,7 +63,7 @@ export async function executeSurferTool(
           },
         })
         const obj = (value && typeof value === 'object') ? value as Record<string, unknown> : { result: value }
-        return JSON.stringify({ cacheHit, ...obj }, null, 2)
+        return JSON.stringify({ cacheHit, ...obj })
       }
 
       // Removed tools return a clear redirect instead of a dead 404.

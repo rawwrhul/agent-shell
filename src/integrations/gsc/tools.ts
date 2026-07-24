@@ -77,17 +77,17 @@ export async function executeGscTool(
           return 'gsc_query_search_analytics error: startDate, endDate, and dimensions (non-empty) are required'
         }
         const rows = await gsc.querySearchAnalytics(tenant, i)
-        return JSON.stringify({ rowCount: rows.length, rows: rows.slice(0, 200) }, null, 2)
+        return JSON.stringify({ rowCount: rows.length, rows: rows.slice(0, 200) })
       }
       case 'gsc_inspect_url': {
         const i = input as { url: string }
         if (!i.url) return 'gsc_inspect_url error: url is required'
         const result = await gsc.inspectUrl(tenant, i.url)
-        return JSON.stringify(result, null, 2)
+        return JSON.stringify(result)
       }
       case 'gsc_list_sitemaps': {
         const result = await gsc.listSitemaps(tenant)
-        return JSON.stringify(result, null, 2)
+        return JSON.stringify(result)
       }
       default:
         return `Unknown GSC tool: ${name}`

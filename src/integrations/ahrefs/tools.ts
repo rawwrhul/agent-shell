@@ -191,7 +191,7 @@ async function cached(tenant: TenantConfig, key: string, ttl: number, fetcher: (
 
 function out(r: Cached): string {
   const obj = (r.value && typeof r.value === 'object') ? r.value as Record<string, unknown> : { result: r.value }
-  return JSON.stringify({ cacheHit: r.cacheHit, ...obj }, null, 2)
+  return JSON.stringify({ cacheHit: r.cacheHit, ...obj })
 }
 
 export async function executeAhrefsTool(
@@ -248,7 +248,7 @@ export async function executeAhrefsTool(
           cacheHit: ourSide.cacheHit && theirSide.cacheHit,
           gap_count: gap.length, prospects: gap,
           note: gap.length === 0 ? 'Empty gap can mean response shape drift — check raw refdomains output via ahrefs_referring_domains.' : undefined,
-        }, null, 2)
+        })
       }
 
       case 'ahrefs_broken_backlinks':

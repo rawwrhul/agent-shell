@@ -72,7 +72,7 @@ export async function executeGa4Tool(
           return 'ga4_run_report error: startDate, endDate, dimensions (non-empty), and metrics (non-empty) are required'
         }
         const r = await ga4.runReport(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return JSON.stringify(r)
       }
       case 'ga4_top_pages': {
         const i = input as { startDate?: string; endDate?: string; limit?: number }
@@ -84,7 +84,7 @@ export async function executeGa4Tool(
           limit:      i.limit ?? 20,
           orderBys:   [{ metric: { metricName: 'screenPageViews' }, desc: true }],
         })
-        return JSON.stringify(r, null, 2)
+        return JSON.stringify(r)
       }
       case 'ga4_traffic_sources': {
         const i = input as { startDate?: string; endDate?: string; limit?: number }
@@ -96,7 +96,7 @@ export async function executeGa4Tool(
           limit:      i.limit ?? 20,
           orderBys:   [{ metric: { metricName: 'sessions' }, desc: true }],
         })
-        return JSON.stringify(r, null, 2)
+        return JSON.stringify(r)
       }
       default:
         return `Unknown GA4 tool: ${name}`

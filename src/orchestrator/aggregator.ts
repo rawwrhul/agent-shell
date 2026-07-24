@@ -40,6 +40,7 @@ import { logger } from '../logger'
 import type { FinalReport } from '../core/slack/blocks/types'
 import { cachedSystem } from '../lib/prompt-cache'
 import { callAnthropic } from '../lib/anthropic-call'
+import { CHEAP_MODEL } from '../agents/intent-budgets'
 import {
   loadDailyDifferential, loadWeeklyDifferential,
   formatDailyDifferentialForPrompt, formatWeeklyDifferentialForPrompt,
@@ -57,6 +58,9 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
   startTrace({ sessionId, taskId: task.id, tenantId: task.tenantId, agentType: 'aggregator', billingTag: tenant.billingTag, userId: task.slackUserId })
 
   const trigger: TaskTrigger = task.trigger ?? 'slack-mention'
+  // Cost-efficiency (2026-07-24): the end-of-week digest is a formatting/
+  // recap synthesis, not strategy — run it on the cheap tier.
+  const aggModel = trigger === 'cron-end-of-week' ? CHEAP_MODEL : tenant.agentModel
   logger.info('aggregator_start', { tenantId: task.tenantId, taskId: task.id, trigger })
 
   try {
@@ -170,7 +174,7 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
     // long synthesis streams to completion; only stream silence aborts. The
     // 5-min job watchdog in queue/worker.ts remains the outer envelope.
     const response = await callAnthropic(anthropic, {
-      model:      tenant.agentModel,
+      model:      aggModel,
       max_tokens: 8096,
       // Cache the system prompt — it's deterministic per (trigger, tenant)
       // pair, so daily/weekly cron runs hit the cache reliably. Specialist
@@ -199,7 +203,7 @@ export async function runAggregator(task: AgentTask, tenant: TenantConfig): Prom
       })
       try {
         const retry = await callAnthropic(anthropic, {
-          model:      tenant.agentModel,
+          model:      aggModel,
           max_tokens: 8096,
           system:     cachedSystem(systemPrompt),
           messages:   [

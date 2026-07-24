@@ -119,20 +119,20 @@ export async function executeFramerTool(
     switch (name) {
       case 'framer_get_project_info': {
         const info = await fr.getProjectInfo(tenant)
-        return JSON.stringify(info, null, 2)
+        return JSON.stringify(info)
       }
       case 'framer_get_publish_info': {
         const info = await fr.getPublishInfo(tenant)
-        return JSON.stringify(info, null, 2)
+        return JSON.stringify(info)
       }
       case 'framer_get_changed_paths': {
         const changes = await fr.getChangedPaths(tenant)
         const total = (changes.added?.length ?? 0) + (changes.removed?.length ?? 0) + (changes.modified?.length ?? 0)
-        return JSON.stringify({ ...changes, total }, null, 2)
+        return JSON.stringify({ ...changes, total })
       }
       case 'framer_list_blog_items': {
         const items = await fr.listBlogItems(tenant)
-        return JSON.stringify({ count: items.length, items }, null, 2)
+        return JSON.stringify({ count: items.length, items })
       }
       case 'framer_draft_blog_post': {
         const i = input as { slug: string; title: string; content: string; date?: string }
@@ -162,7 +162,7 @@ export async function executeFramerTool(
           errors:           result.preview.errors,
           urls:             result.preview.urls,
           next_step:        `Now call propose_action with toolName="framer_confirm_publish" and toolInput={"confirmationHash":"${result.preview.confirmationHash}","itemId":"${result.itemId}","slug":"${i.slug}","title":${JSON.stringify(i.title)}}`,
-        }, null, 2)
+        })
       }
       default:
         return `Unknown Framer tool: ${name}`

@@ -43,7 +43,16 @@ export async function runOrchestrator(task: AgentTask, tenant: TenantConfig): Pr
 
   const specialists = getSpecialists(tenant.agentType)
   const spawnedIds: string[] = []
-  const MAX_SUBAGENTS_PER_TASK = Number(process.env.MAX_SUBAGENTS_PER_TASK ?? '4')
+  // Cost-efficiency (2026-07-24): cron-triggered runs get a tighter fan-out
+  // cap than ad-hoc requests. The daily/weekly playbooks are written for ONE
+  // generation specialist doing a checklist (plus at most one cheap
+  // investigate helper) — every extra specialist re-reads the same context
+  // and splits the same wall-clock. Ad-hoc operator requests keep the wider
+  // cap since their shape is unpredictable.
+  const isCronTask = !!task.trigger && task.trigger.startsWith('cron-')
+  const MAX_SUBAGENTS_PER_TASK = isCronTask
+    ? Number(process.env.MAX_SUBAGENTS_PER_CRON_TASK ?? '2')
+    : Number(process.env.MAX_SUBAGENTS_PER_TASK ?? '4')
 
   // Pull the tenant's memory context. Best-effort.
   let memoryPrompt = ''

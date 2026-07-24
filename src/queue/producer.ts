@@ -54,7 +54,19 @@ export async function enqueueTask(params: {
 export async function enqueueSubagentJob(params: { task: AgentTask; subTaskId: string; priority?: number }) {
   await agentQueue.add('subagent',
     { jobType: 'subagent', task: params.task, subTaskId: params.subTaskId } as AgentJob,
-    { priority: params.priority ?? 5 })
+    {
+      priority: params.priority ?? 5,
+      // Cost-efficiency (2026-07-24): jobId keyed to the subtask makes the
+      // enqueue idempotent — the same specialist can never be double-queued
+      // (observed: duplicate subagent jobs racing each other, each burning a
+      // full run budget on identical work).
+      jobId: `subagent-${params.subTaskId}`,
+      // 2 attempts, not the queue default of 3. Retries resume from the
+      // run checkpoint (see subagent.ts) so a second attempt is cheap, but
+      // a third blind attempt on a job that failed twice is nearly always
+      // burning tokens on a structural problem a human needs to look at.
+      attempts: 2,
+    })
   logger.info('subagent_enqueued', { taskId: params.task.id, subTaskId: params.subTaskId })
 }
 

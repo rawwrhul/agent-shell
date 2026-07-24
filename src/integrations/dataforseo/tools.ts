@@ -3,6 +3,36 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { TenantConfig } from '../../tenants/types'
 import * as dfs from './client'
+import { pool } from '../../memory/postgres'
+import { cachedJson } from '../../core/cache/cached-fetch'
+
+// Cost-efficiency (2026-07-24): DataForSEO calls are metered AND the same
+// questions repeat across the day's runs (morning daily, afternoon daily,
+// discovery cycles all look at the same domain/keywords). Read-through
+// cache via cache_entries: keyword/domain data ages in weeks, SERPs in
+// days — a same-day repeat call should never hit the vendor.
+const DFS_TTL: Record<string, number> = {
+  dataforseo_keyword_overview:     7 * 86_400,
+  dataforseo_ranked_keywords:      3 * 86_400,
+  dataforseo_keywords_for_site:    7 * 86_400,
+  dataforseo_serp:                 2 * 86_400,
+  dataforseo_backlinks_summary:    7 * 86_400,
+  dataforseo_competitor_research: 14 * 86_400,
+}
+
+async function dfsCached(
+  tenant: TenantConfig,
+  name: string,
+  input: Record<string, unknown>,
+  fetcher: () => Promise<unknown>,
+): Promise<string> {
+  const key = `${name}:${JSON.stringify(input)}`.slice(0, 500)
+  const r = await cachedJson({
+    pool, source: 'dataforseo', tenantId: tenant.tenantId, key,
+    ttlSeconds: DFS_TTL[name] ?? 86_400, fetcher,
+  })
+  return JSON.stringify(r.value)
+}
 
 export const DATAFORSEO_TOOLS: Anthropic.Tool[] = [
   {
@@ -119,38 +149,32 @@ export async function executeDataForSeoTool(
       case 'dataforseo_keyword_overview': {
         const i = input as { keywords: string[]; locationCode?: number; languageCode?: string }
         if (!i.keywords?.length) return 'dataforseo_keyword_overview error: keywords (non-empty) required'
-        const r = await dfs.keywordOverview(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.keywordOverview(tenant, i))
       }
       case 'dataforseo_ranked_keywords': {
         const i = input as { target: string; locationCode?: number; languageCode?: string; limit?: number }
         if (!i.target) return 'dataforseo_ranked_keywords error: target required'
-        const r = await dfs.rankedKeywords(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.rankedKeywords(tenant, i))
       }
       case 'dataforseo_keywords_for_site': {
         const i = input as { target: string; locationCode?: number; languageCode?: string; limit?: number }
         if (!i.target) return 'dataforseo_keywords_for_site error: target required'
-        const r = await dfs.keywordsForSite(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.keywordsForSite(tenant, i))
       }
       case 'dataforseo_serp': {
         const i = input as { keyword: string; locationCode?: number; languageCode?: string; depth?: number }
         if (!i.keyword) return 'dataforseo_serp error: keyword required'
-        const r = await dfs.serpOrganicLive(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.serpOrganicLive(tenant, i))
       }
       case 'dataforseo_backlinks_summary': {
         const i = input as { target: string }
         if (!i.target) return 'dataforseo_backlinks_summary error: target required'
-        const r = await dfs.backlinksSummary(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.backlinksSummary(tenant, i))
       }
       case 'dataforseo_competitor_research': {
         const i = input as { target: string; limit?: number; locationCode?: number; languageCode?: string }
         if (!i.target) return 'dataforseo_competitor_research error: target required'
-        const r = await dfs.competitorsDomain(tenant, i)
-        return JSON.stringify(r, null, 2)
+        return dfsCached(tenant, name, i as Record<string, unknown>, () => dfs.competitorsDomain(tenant, i))
       }
       default:
         return `Unknown DataForSEO tool: ${name}`
