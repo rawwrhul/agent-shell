@@ -96,6 +96,10 @@ export interface TenantConfig {
 
   /** Autonomy tier. Absent/undefined behaves as 'hitl'. */
   autonomyLevel?: AutonomyLevel
+  /** Max propose_action calls per daily generation run, INCLUDING the
+   *  article. Null/undefined = default playbook counts (8-12 autonomous,
+   *  2-5 HITL). Set low (e.g. 4) for tenants that should run lean. */
+  dailyActionCap?: number
 }
 
 export interface TenantRow {
@@ -130,5 +134,6 @@ export interface TenantRow {
   ga4_property_id: string | null
   framer_project_url: string | null
   autonomy_level: AutonomyLevel | null   // tenant-autonomy migration
+  daily_action_cap: number | null        // cost-efficiency migration (2026-07-24)
   webflow_site_id: string | null         // webflow-tenant migration
 }
