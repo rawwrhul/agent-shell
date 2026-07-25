@@ -718,10 +718,14 @@ This task is the morning cron run. Your job: produce real work for ${tenant.clie
 ## What good looks like
 
 By end of run, you've produced:
-  - **${tenant.autonomyLevel === 'full' ? '8-12' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
-    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only still applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky — but do NOT stop at 3-4 actions when the opportunity bank has more: an under-filed run leaves ranked-and-scored work sitting in the bank doing nothing.
+  - **${tenant.autonomyLevel === 'full' ? '2-4' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky.
 
-ACTION MIX (aggressive on the compounding levers): aim per run for AT LEAST 3 meta title/description rewrites, 3 internal links, and 1 body-copy strengthening of an existing page (pull from the copy_optimise entries in the bank — the detail JSON includes secondary_gap_keywords to weave in), PLUS the one article. The bank's metadata_edit / copy_optimise / internal_link entries were scored and ranked overnight — DRAFT from them instead of rediscovering. Alt-text fixes no longer count toward the mix: the backlog is nearly exhausted; file them only when you touch a page anyway.`
+DIVISION OF LABOUR (2026-07-25 — respect it, it is why runs stopped failing): a separate daily bank_drain cycle now ships ~20 banked meta rewrites and internal links every morning at volume. DO NOT file webflow/framer_update_blog_meta or _add_internal_link actions from the bank — that work is already being executed cheaper and you would duplicate or churn-cap-block it. Your run owns what the drain cannot do:
+  1. THE ARTICLE (primary — full playbook below).
+  2. ONE body-copy strengthening from the bank's copy_optimise entries (the detail JSON includes secondary_gap_keywords to weave in) — this is LLM-heavy work that belongs to you, not the drain.
+  3. Incidental fixes ONLY on pages you already touched this run (e.g. missing alt text on a page you read).
+Exception: if you find a genuinely NEW meta/link problem NOT in the bank (check query_opportunities first), you may file it — discovery gaps are yours to catch.`
     : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.

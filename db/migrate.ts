@@ -19,6 +19,7 @@ import { runTenantAutonomyMigration } from './migrations/tenant-autonomy'
 import { runDailyDigestsMigration } from './migrations/daily-digests'
 import { runWebflowTenantMigration } from './migrations/webflow-tenant'
 import { runKeywordGapMigration } from './migrations/keyword-gap'
+import { runBankDrainMigration } from './migrations/bank-drain'
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
@@ -326,6 +327,7 @@ async function migrate() {
   await runDailyDigestsMigration(pool)
   await runWebflowTenantMigration(pool)
   await runKeywordGapMigration(pool)
+  await runBankDrainMigration(pool)
 
   console.log('✅ All migrations complete')
   await pool.end()

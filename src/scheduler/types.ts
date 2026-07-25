@@ -16,7 +16,11 @@
 // 'keyword_gap' — origination layer: Ahrefs competitor organic keywords
 // diffed against our GSC surface -> seo.keyword_gap. Feeds strategy refresh
 // (attack clusters) and copy/meta discovery (secondary targeting). Silent.
-export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create' | 'outcome_score' | 'daily_digest' | 'keyword_gap'
+// 'bank_drain' — cheap volume executor: ships top-N banked metadata_edit +
+// internal_link opportunities with one bounded LLM call each through the
+// full propose_action gate chain. Exists because the generation runs drained
+// ~3/day while 400+ scored items sat 'new' (2026-07-25).
+export type RunKind = 'daily' | 'daily_pm' | 'weekly' | 'end-of-week' | 'seo_audit' | 'backlink_prospect' | 'brand_mention_scan' | 'metrics_sync' | 'strategy_refresh' | 'metadata_edit' | 'copy_optimise' | 'internal_link' | 'article_create' | 'outcome_score' | 'daily_digest' | 'keyword_gap' | 'bank_drain'
 
 export interface TenantSchedule {
   tenantId:    string

@@ -31,6 +31,7 @@ import type { TenantConfig } from '../tenants/types'
 import { runFullAuditCycle } from '../skills/seo-technical-auditor';
 import { runBacklinkProspectCycle } from '../skills/seo-backlink-prospector';
 import { runKeywordGapCycle } from '../skills/seo-keyword-gap';
+import { runBankDrainCycle } from '../skills/seo-bank-drain';
 import { runBrandMentionScanCycle } from '../skills/seo-brand-mention-monitor';
 import { runStrategyRefreshCycle } from '../core/strategy/refresh';
 import { runMetadataEditCycle } from '../skills/seo-discovery';
@@ -160,6 +161,24 @@ async function processScheduledJob(job: Job<ScheduledRunPayload>): Promise<void>
       logger.info('backlink_prospect_cycle_completed_from_worker', { tenantId });
     } catch (err) {
       logger.error('backlink_prospect_cycle_failed_from_worker', {
+        tenantId, err: String(err).slice(0, 500),
+      });
+    }
+    await recordScheduleFired(tenantId, runKind, new Date());
+    return;
+  }
+
+  // bank_drain — ship top-N banked on-page opportunities (cheap model, full
+  // gate chain). Runs after discovery cycles so the bank is fresh.
+  if (runKind === 'bank_drain') {
+    logger.info('bank_drain_cycle_starting_from_worker', { tenantId });
+    try {
+      const r = await withTimeout(runBankDrainCycle(tenantId), 'bank_drain');
+      logger.info('bank_drain_cycle_completed_from_worker', {
+        tenantId, picked: r.picked, filed: r.filed, rejected: r.rejected, skipped: r.skipped, errors: r.errors,
+      });
+    } catch (err) {
+      logger.error('bank_drain_cycle_failed_from_worker', {
         tenantId, err: String(err).slice(0, 500),
       });
     }
