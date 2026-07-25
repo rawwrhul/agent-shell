@@ -55,7 +55,7 @@ export async function executeWebflowTool(
     switch (name) {
       case 'webflow_get_site_info': {
         const info = await wf.getSiteInfo(tenant)
-        return JSON.stringify(info, null, 2)
+        return JSON.stringify(info)
       }
       case 'webflow_list_blog_items': {
         const limit = Math.min(Number(input.limit) || 100, 100)
@@ -71,18 +71,18 @@ export async function executeWebflowTool(
             isDraft: i.isDraft,
             lastPublished: i.lastPublished,
           })),
-        }, null, 2)
+        })
       }
       case 'webflow_get_blog_item': {
         const slug = String(input.slug ?? '').trim()
         if (!slug) return 'webflow_get_blog_item error: slug is required'
         const item = await wf.getItemBySlug(tenant, slug)
         if (!item) return `webflow_get_blog_item: no item with slug '${slug}'`
-        return JSON.stringify({ id: item.id, isDraft: item.isDraft, lastPublished: item.lastPublished, fieldData: item.fieldData }, null, 2)
+        return JSON.stringify({ id: item.id, isDraft: item.isDraft, lastPublished: item.lastPublished, fieldData: item.fieldData })
       }
       case 'webflow_list_pages': {
         const pages = await wf.listPages(tenant)
-        return JSON.stringify({ count: pages.length, pages }, null, 2)
+        return JSON.stringify({ count: pages.length, pages })
       }
       default:
         return `Unknown Webflow tool: ${name}`

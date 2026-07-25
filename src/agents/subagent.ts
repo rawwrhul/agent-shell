@@ -72,7 +72,11 @@ import {
 import {
   captureBaselineCounts, reconcileOutput, ReconciliationCounts,
 } from './reconciliation'
-import { budgetsFor } from './intent-budgets'
+import {
+  budgetsFor, modelForIntent,
+  SOFT_STOP_FRACTION, WRAPUP_MAX_TOKENS, CHEAP_MODEL,
+} from './intent-budgets'
+import { scratchpadAppend, scratchpadReadByKey } from '../memory/runtime'
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -96,11 +100,30 @@ const HARD_ITERATION_CAP = 15
 // does not.
 const TOOL_CALL_TIMEOUT_MS = 5 * 60_000
 
+// Global tool-result size cap (cost-efficiency, 2026-07-24). Every tool
+// result lives in the conversation for the REST of the run and is re-sent
+// (cache-read, but still cost + context pressure) on every subsequent turn.
+// Individual tools have their own caps, but this is the belt-and-braces
+// choke point for anything that slips through (vendor list endpoints,
+// crawler dumps). 30K chars ≈ 8-10K tokens — enough for a full article body
+// or a 200-row GSC dump in compact JSON.
+const MAX_TOOL_RESULT_CHARS = 30_000
+
+function capToolResult(output: string, toolName: string): string {
+  if (output.length <= MAX_TOOL_RESULT_CHARS) return output
+  logger.warn('subagent_tool_result_truncated', {
+    toolName, originalChars: output.length, cap: MAX_TOOL_RESULT_CHARS,
+  })
+  return output.slice(0, MAX_TOOL_RESULT_CHARS) +
+    `\n\n[TRUNCATED — result was ${output.length} chars, showing first ${MAX_TOOL_RESULT_CHARS}. ` +
+    `If you need the rest, re-call the tool with a narrower query (fewer rows, a specific page, a filter) instead of the same call.]`
+}
+
 async function toolCallWithTimeout(p: Promise<string>, toolName: string): Promise<string> {
   const t0 = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    return await Promise.race([
+    return capToolResult(await Promise.race([
       p,
       new Promise<string>(resolve => {
         timer = setTimeout(() => {
@@ -109,7 +132,7 @@ async function toolCallWithTimeout(p: Promise<string>, toolName: string): Promis
         }, TOOL_CALL_TIMEOUT_MS)
         if (typeof timer.unref === 'function') timer.unref()
       }),
-    ])
+    ]), toolName)
   } finally {
     if (timer) clearTimeout(timer)
     // Slow-tool observability (2026-07-14: runs burned 20min on ~10 tool
@@ -127,6 +150,84 @@ const WRITE_SIDE_SEO_TOOL_NAMES = new Set([
   'snapshot_metrics',
   'upsert_cluster',
 ])
+
+// ── Checkpoint / resume (cost-efficiency, 2026-07-24) ─────────────────────
+//
+// Cut-off runs used to restart from scratch on every retry — re-running all
+// discovery, re-filing nothing, hitting the same cap again. Measured: single
+// tasks with 17 attempts and ~3M tokens. Now every successful write-side
+// tool call appends a compact checkpoint to run_scratchpad (keyed to the
+// parent task + specialist), and a retry of the same subtask loads the
+// latest checkpoint into its opening prompt so it continues instead of
+// re-deriving.
+
+const checkpointKeyFor = (subTaskId: string) => `checkpoint-${subTaskId}`
+
+interface RunCheckpoint {
+  turns:      number
+  tokenCount: number
+  /** Compact one-line descriptions of write-side tool calls that succeeded. */
+  filed:      string[]
+  /** Optional wrap-up note: what was in flight / still pending at stop. */
+  note?:      string
+}
+
+async function writeCheckpoint(
+  parentTaskId: string,
+  subTaskId: string,
+  cp: RunCheckpoint,
+): Promise<void> {
+  try {
+    await scratchpadAppend({
+      runId: parentTaskId,
+      key:   checkpointKeyFor(subTaskId),
+      value: JSON.stringify(cp),
+    })
+  } catch (err) {
+    logger.warn('subagent_checkpoint_write_failed', {
+      parentTaskId, subTaskId, err: String(err).slice(0, 200),
+    })
+  }
+}
+
+async function loadResumeBrief(
+  parentTaskId: string,
+  subTaskId: string,
+): Promise<string | null> {
+  try {
+    const entries = await scratchpadReadByKey(parentTaskId, checkpointKeyFor(subTaskId))
+    if (!entries.length) return null
+    const last = entries[entries.length - 1]
+    const raw  = typeof last.value === 'string' ? last.value : JSON.stringify(last.value)
+    return `
+
+# RESUME NOTICE — a previous attempt of this exact task already ran
+
+The previous attempt stopped early (budget, timeout, or crash) but real work may already be FILED. Its last checkpoint:
+
+${raw}
+
+Rules for this attempt:
+- Do NOT redo or re-file anything listed under "filed" — those writes already landed. Verify via approval_requests / seo_opportunities if unsure, don't assume they failed.
+- Do NOT redo discovery the previous attempt already covered. Continue from what remains.
+- If the checkpoint shows the core deliverable was already filed, verify briefly and wrap up with SPECIALIST_COMPLETE instead of starting new work.`
+  } catch (err) {
+    logger.warn('subagent_resume_load_failed', {
+      parentTaskId, subTaskId, err: String(err).slice(0, 200),
+    })
+    return null
+  }
+}
+
+/** Compact one-line label for a write-side tool call, for the checkpoint. */
+function describeWriteCall(toolName: string, input: Record<string, unknown>): string {
+  const hint =
+    (input.proposedAction as string | undefined) ??
+    (input.slug           as string | undefined) ??
+    (input.title          as string | undefined) ??
+    (input.key            as string | undefined) ?? ''
+  return `${toolName}${hint ? `: ${String(hint).slice(0, 120)}` : ''}`
+}
 
 /**
  * All Anthropic calls go through the shared idle-timeout streaming wrapper.
@@ -193,6 +294,15 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   const subTask = await getSubTask(subTaskId)
   if (!subTask) throw new Error(`SubTask ${subTaskId} not found`)
 
+  // Idempotence guard (cost-efficiency, 2026-07-24). A retry can race a
+  // zombie of the original attempt that finished after the watchdog fired.
+  // If the subtask already completed, this attempt has nothing to do —
+  // running it anyway was a full duplicate run at full price.
+  if (subTask.status === 'completed') {
+    logger.info('subagent_skip_already_completed', { subTaskId, taskId: task.id })
+    return
+  }
+
   const sessionId = uuid()
   const runId     = uuid()
   const taskIntent: TaskIntent = (subTask.task_intent ?? 'propose_changes') as TaskIntent
@@ -239,7 +349,13 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
   const baseSystem = buildSubagentSystem(subTask, tenant, learnings, taskIntent)
   const system     = memoryPrompt ? `${memoryPrompt}\n\n${baseSystem}` : baseSystem
-  const userMsg    = buildSubagentPrompt(subTask, workDir)
+
+  // Resume from checkpoint if a previous attempt of this subtask ran.
+  const resumeBrief = await loadResumeBrief(task.id, subTaskId)
+  if (resumeBrief) {
+    logger.info('subagent_resuming_from_checkpoint', { subTaskId, taskId: task.id })
+  }
+  const userMsg = buildSubagentPrompt(subTask, workDir) + (resumeBrief ?? '')
 
   const tools = buildToolsForSpecialist({
     tenantSkills: tenant.skills,
@@ -276,6 +392,8 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
 
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMsg }]
   let tokenCount = 0, toolCount = 0, finalOutput = ''
+  const filedActions: string[] = []
+  let softStopInjected = false
 
   // Per-intent budgets. daily_generation gets bigger caps because it
   // has to research multiple pillars + draft Framer content + file
@@ -285,10 +403,63 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
   const budgets = budgetsFor(taskIntent)
   const iterationCap = Math.min(config.AGENT_MAX_TURNS ?? budgets.iterationCap, budgets.iterationCap)
 
+  // Model tiering: recap-style intents (weekly_digest) run on the cheap
+  // tier; everything else inherits the tenant's configured model.
+  const runModel = modelForIntent(taskIntent, tenant.agentModel)
+
+  // Effective token ceiling: tenant-configured budget, falling back to the
+  // intent ceiling, never above the intent ceiling.
+  const tokenBudget = Math.min(
+    tenant.tokenBudgetPerRun || budgets.tokenCeiling,
+    budgets.tokenCeiling,
+  )
+
   try {
     const startedAt = Date.now()
     let turns = 0
     let budgetExhausted: string | null = null
+
+    // Graceful wrap-up: one cheap-tier call that turns a capped run's
+    // transcript into (a) operator-facing partial findings and (b) a
+    // machine-readable pending list for the checkpoint. Shared by the
+    // budget-stop and iteration-cap paths.
+    const synthesiseWrapUp = async (reason: string): Promise<string> => {
+      const wrapMessages: Anthropic.MessageParam[] = [
+        ...messages,
+        {
+          role: 'user',
+          content:
+            `This run is stopping now (${reason}). STOP making tool calls. ` +
+            'Write two sections:\n\n' +
+            '1. FINDINGS — 3-5 actionable findings for the operator based on what you actually did. ' +
+            'Plain language, lead with the action, no SEO jargon. List anything you successfully FILED this run. ' +
+            "If you're not certain about something, mark it: 'Looks like X but I didn't have time to confirm.'\n" +
+            '2. PENDING — a short bullet list of concrete items you had planned but did NOT finish ' +
+            '(so the next run can pick them up without redoing your research). If nothing is pending, say so.\n\n' +
+            'End with: SPECIALIST_COMPLETE: <one-line summary>',
+        },
+      ]
+      const wrapResponse = await callAnthropicWithRetry({
+        model:      CHEAP_MODEL,
+        max_tokens: WRAPUP_MAX_TOKENS,
+        system:     cachedSystem(system),
+        messages:   wrapMessages,
+      })
+      const wUsage          = wrapResponse.usage
+      const wBilledThisTurn = (wUsage?.input_tokens ?? 0)
+        + (wUsage?.cache_creation_input_tokens ?? 0)
+        + Math.round((wUsage?.cache_read_input_tokens ?? 0) * 0.10)
+        + (wUsage?.output_tokens ?? 0)
+      tokenCount += wBilledThisTurn
+      logger.info('subagent_tokens', {
+        taskId: task.id, subTaskId, turn: 'wrapup',
+        billed_this_turn: wBilledThisTurn, cumulative: tokenCount,
+      })
+      return wrapResponse.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map(b => b.text)
+        .join('')
+    }
     while (turns < iterationCap) {
       turns++
 
@@ -301,14 +472,14 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         break
       }
       // Phase 8.5: token-budget check (tenant-configured ceiling)
-      if (tenant.tokenBudgetPerRun && tokenCount >= tenant.tokenBudgetPerRun) {
-        budgetExhausted = `token budget ${tokenCount}/${tenant.tokenBudgetPerRun} exceeded`
-        logger.warn('subagent_budget_tokens', { taskId: task.id, subTaskId, tokenCount, budget: tenant.tokenBudgetPerRun, turns })
+      if (tokenBudget && tokenCount >= tokenBudget) {
+        budgetExhausted = `token budget ${tokenCount}/${tokenBudget} exceeded`
+        logger.warn('subagent_budget_tokens', { taskId: task.id, subTaskId, tokenCount, budget: tokenBudget, turns })
         break
       }
 
       const response = await callAnthropicWithRetry({
-        model:      tenant.agentModel,
+        model:      runModel,
         max_tokens: budgets.maxTokens,
         system:     cachedSystem(system),
         tools:      cachedTools(tools),
@@ -340,8 +511,20 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         output_tokens:    outputTokens,
         billed_this_turn: billedThisTurn,
         cumulative:       tokenCount,
-        budget:           tenant.tokenBudgetPerRun,
+        budget:           tokenBudget,
       })
+
+      // Soft stop (cost-efficiency, 2026-07-24). Crossing 80% of EITHER
+      // budget injects a one-time wrap-up instruction with the next tool
+      // results, so the run finishes its current item and exits cleanly
+      // INSIDE budget instead of being guillotined at the hard cap with
+      // 480-520K spent against a 400K ceiling.
+      const softStopDue =
+        !softStopInjected &&
+        (
+          (tokenBudget && tokenCount >= tokenBudget * SOFT_STOP_FRACTION) ||
+          (Date.now() - startedAt) >= budgets.wallClockMs * SOFT_STOP_FRACTION
+        )
 
       if (response.stop_reason === 'end_turn') {
         finalOutput = response.content
@@ -397,6 +580,17 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
               seoToolCtx,
             ), tb.name)
             results.push({ type: 'tool_result', tool_use_id: tb.id, content: output })
+
+            // Checkpoint every successful write-side call so a retry (or
+            // the next scheduled run) knows this work already landed and
+            // never re-files it.
+            const writeFailed = /^(CRITIC_REJECTED|PITCH_VALIDATION_FAILED|TOOL_TIMEOUT|Tool denied|ERROR|Error)/i.test(output.trim())
+            if (WRITE_SIDE_SEO_TOOL_NAMES.has(tb.name) && !writeFailed) {
+              filedActions.push(describeWriteCall(tb.name, tb.input as Record<string, unknown>))
+              await writeCheckpoint(task.id, subTaskId, {
+                turns, tokenCount, filed: filedActions,
+              })
+            }
             continue
           }
 
@@ -451,73 +645,49 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
         }
 
         messages.push({ role: 'assistant', content: response.content })
-        messages.push({ role: 'user', content: results })
+
+        // Soft-stop nudge rides along with the tool results (tool_result
+        // blocks first, then text — API requirement).
+        const resultContent: Anthropic.ContentBlockParam[] = [...results]
+        if (softStopDue) {
+          softStopInjected = true
+          logger.info('subagent_soft_stop_injected', {
+            taskId: task.id, subTaskId, turns, tokenCount, budget: tokenBudget,
+          })
+          resultContent.push({
+            type: 'text',
+            text:
+              'BUDGET NOTICE: this run has used over 80% of its token or time budget. ' +
+              'WRAP UP NOW. Finish ONLY the item you are currently working on and file it if it is ready. ' +
+              'Then write your findings to output.md and end with SPECIALIST_COMPLETE. ' +
+              'Do NOT start new items, new drafts, or new discovery — anything unfinished goes in a short PENDING list in output.md for the next run.',
+          })
+        }
+        messages.push({ role: 'user', content: resultContent })
       }
     }
 
-    if (budgetExhausted && !finalOutput) {
-      finalOutput = `Run stopped early — ${budgetExhausted}. Partial work may be in run_scratchpad / approval_requests for review. No further proposals filed in this run.`
-      logger.info('subagent_budget_stop_synthesised', { taskId: task.id, subTaskId, reason: budgetExhausted })
-    }
+    // Unified graceful stop (cost-efficiency, 2026-07-24). Any capped run —
+    // token budget, wall-clock, or iteration cap — gets ONE cheap-tier
+    // wrap-up call that converts the transcript into partial findings + a
+    // PENDING list, and writes a final checkpoint so the next attempt or
+    // next scheduled run continues instead of restarting.
+    const cappedReason: string | null =
+      budgetExhausted                        ? budgetExhausted :
+      (turns >= iterationCap && !finalOutput) ? `iteration cap ${iterationCap} reached` :
+      null
 
-    if (turns >= iterationCap && !finalOutput) {
-      logger.warn('subagent_iteration_cap_hit', {
+    if (cappedReason && !finalOutput) {
+      logger.warn('subagent_capped', {
         taskId: task.id, subTaskId, specialistType: subTask.specialist_type,
-        cap: iterationCap, toolCount, tokenCount,
+        reason: cappedReason, turns, toolCount, tokenCount,
       })
 
       try {
-        const summaryMessages: Anthropic.MessageParam[] = [
-          ...messages,
-          {
-            role: 'user',
-            content:
-              'You have used your iteration budget. STOP making tool calls. ' +
-              "Based on what you've discovered so far, write 3-5 actionable findings " +
-              'for the operator. Plain language. Lead with the action. Tell them the ' +
-              "impact in their terms (don't use SEO jargon). If you don't have enough " +
-              "data to make a confident finding, mark it explicitly: 'Looks like X but " +
-              "I didn't have time to confirm.' " +
-              'End with: SPECIALIST_COMPLETE: <one-line summary>',
-          },
-        ]
-
-        const summaryResponse = await callAnthropicWithRetry({
-          model:      tenant.agentModel,
-          max_tokens: 2048,
-          system:     cachedSystem(system),
-          messages: summaryMessages,
-        })
-
-        // Phase A: same four-field accounting as the main loop.
-        const sUsage          = summaryResponse.usage
-        const sInputTokens    = sUsage?.input_tokens                ?? 0
-        const sCacheCreation  = sUsage?.cache_creation_input_tokens ?? 0
-        const sCacheRead      = sUsage?.cache_read_input_tokens     ?? 0
-        const sOutputTokens   = sUsage?.output_tokens               ?? 0
-        const sBilledThisTurn = sInputTokens + sCacheCreation + Math.round(sCacheRead * 0.10) + sOutputTokens
-        tokenCount += sBilledThisTurn
-        logger.info('subagent_tokens', {
-          taskId:           task.id,
-          subTaskId,
-          turn:             'summary',
-          input_tokens:     sInputTokens,
-          cache_creation:   sCacheCreation,
-          cache_read:       sCacheRead,
-          output_tokens:    sOutputTokens,
-          billed_this_turn: sBilledThisTurn,
-          cumulative:       tokenCount,
-        })
-
-        finalOutput = summaryResponse.content
-          .filter((b: Anthropic.ContentBlock): b is Anthropic.TextBlock => b.type === 'text')
-          .map((b: Anthropic.TextBlock) => b.text)
-          .join('')
-
+        finalOutput = await synthesiseWrapUp(cappedReason)
         if (!finalOutput) {
-          finalOutput = `Specialist hit its work budget before completing the check. The findings below are partial.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+          finalOutput = `Run stopped early — ${cappedReason}. Filed so far: ${filedActions.length ? filedActions.join('; ') : 'nothing'}.\n\nSPECIALIST_COMPLETE: Partial — ${cappedReason}`
         }
-
         logger.info('subagent_cap_summary_complete', {
           taskId: task.id, subTaskId, summaryLen: finalOutput.length,
         })
@@ -531,11 +701,19 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
             .filter((b): b is Anthropic.TextBlock => b.type === 'text')
             .map(b => b.text)
             .join('') ||
-            `Specialist hit its work budget before completing the check. Partial findings only.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+            `Run stopped early — ${cappedReason}. Partial findings only.\n\nSPECIALIST_COMPLETE: Partial — ${cappedReason}`
         } else {
-          finalOutput = `Specialist hit its work budget before completing the check.\n\nSPECIALIST_COMPLETE: Partial — hit work limit before finishing`
+          finalOutput = `Run stopped early — ${cappedReason}.\n\nSPECIALIST_COMPLETE: Partial — ${cappedReason}`
         }
       }
+
+      // Final checkpoint: carry the wrap-up's PENDING section forward so a
+      // retry resumes from it instead of re-deriving everything.
+      const pendingMatch = finalOutput.match(/PENDING[\s\S]{0,800}/)
+      await writeCheckpoint(task.id, subTaskId, {
+        turns, tokenCount, filed: filedActions,
+        note: `stopped: ${cappedReason}. ${pendingMatch ? pendingMatch[0].slice(0, 800) : ''}`.trim(),
+      })
     }
 
     // ── Reconciliation ────────────────────────────────────────────────────
@@ -564,7 +742,7 @@ export async function runSubagent(task: AgentTask, subTaskId: string, tenant: Te
     const marker  = finalOutput.match(/SPECIALIST_COMPLETE:\s*(.+)/m)
     const summary = marker?.[1]?.trim() ?? finalOutput.slice(0, 200)
 
-    recordUsage(sessionId, tenant.agentModel, tokenCount, 0)
+    recordUsage(sessionId, runModel, tokenCount, 0)
 
     await completeSubTask({ subTaskId, output: finalOutput, summary, tokenCount, toolCallCount: toolCount })
     await completeRunRecord({ id: runId, status: 'completed', tokenCount, toolCallCount: toolCount, summary })

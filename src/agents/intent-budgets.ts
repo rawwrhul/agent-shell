@@ -75,6 +75,38 @@ export const PER_SUBAGENT_TOKEN_CEILING: Record<TaskIntent, number> = {
   weekly_digest:     300_000,
 }
 
+// ── Cost-efficiency additions (2026-07-24) ────────────────────────────────
+
+/**
+ * Soft-stop threshold. When a run crosses this fraction of EITHER its
+ * token budget or its wall-clock cap, the loop injects a one-time wrap-up
+ * nudge: finish the current item, file what's ready, checkpoint, stop.
+ * Measured before this existed: 75% of completed-run spend was runs that
+ * hit a HARD cap mid-flight — full price paid for guillotined work.
+ */
+export const SOFT_STOP_FRACTION = 0.8
+
+/** max_tokens for the graceful wrap-up / cap-summary synthesis call. */
+export const WRAPUP_MAX_TOKENS = 2048
+
+/**
+ * Model tiering by intent. Most intents inherit the tenant's model
+ * (Sonnet); intents that are formatting/recap work rather than reasoning
+ * work run on Haiku (~70% cheaper on input, 3x cheaper on output).
+ * The wrap-up synthesis call also uses the cheap tier — it summarises a
+ * transcript, it doesn't produce client-facing strategy.
+ */
+export const CHEAP_MODEL = 'claude-haiku-4-5'
+
+const MODEL_OVERRIDE_BY_INTENT: Partial<Record<TaskIntent, string>> = {
+  weekly_digest: CHEAP_MODEL,
+}
+
+export function modelForIntent(intent: TaskIntent | undefined, tenantModel: string): string {
+  if (intent && MODEL_OVERRIDE_BY_INTENT[intent]) return MODEL_OVERRIDE_BY_INTENT[intent]!
+  return tenantModel
+}
+
 /**
  * Convenience: resolve all three caps for a given intent, with safe
  * fallback if intent is unrecognised (older subtask rows pre-this-task).

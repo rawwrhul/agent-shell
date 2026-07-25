@@ -75,7 +75,7 @@ export async function executePexelsTool(
           query:        i.query,
           totalResults: result.total_results,
           photos:       trimmed,
-        }, null, 2)
+        })
       }
       default:
         return `Unknown Pexels tool: ${name}`

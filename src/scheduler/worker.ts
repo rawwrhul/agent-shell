@@ -408,7 +408,8 @@ Your job is DRAFTING, not DISCOVERY. Background runs already populated the oppor
 What to produce this run (in priority order):
 
 1. ONE new blog post on a topic gap, filed via propose_action with toolName='approve_blog_pitch' (two-stage flow; the Surfer quality gate decides publish). Do NOT attempt a second post — the token budget will not support it; the other daily run covers the second article.
-${kind === 'daily_pm' ? '   IMPORTANT: check approval_requests for today before picking a topic — the morning run already filed one post. Pick a DIFFERENT topic/cluster.\n' : ''}
+${kind === 'daily_pm' ? `   IMPORTANT: check approval_requests for today before picking a topic — the morning run already filed one post. Pick a DIFFERENT topic/cluster.
+   FINISH-FIRST RULE: before starting anything new, check whether the morning run left specific work unfinished — look at today's approval_requests and the highest-priority unsurfaced seo_opportunities entries (query_opportunities). If concrete items are already researched and queued, complete THOSE first — they cost a fraction of fresh discovery.\n` : ''}
 2. Up to 4-6 on-page improvements for existing pages — QUALITY FLOOR, not quota: every action must be grounded in data you read this run and pass the server-side gates. If the bank only supports 3 strong actions today, file 3. Never manufacture a mediocre edit to hit a count; padded actions get rejected by the critic and waste the run. Pick the right tool based on what you're changing:
 ${cmsToolList}
 

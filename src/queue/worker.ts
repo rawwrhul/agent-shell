@@ -4,6 +4,8 @@ import { AgentJob }  from '../types'
 import { getTenant } from '../tenants/registry'
 import { runOrchestrator }  from '../orchestrator/index'
 import { runSubagent }      from '../agents/subagent'
+import { getSubTask }       from '../memory/subtasks'
+import { budgetsFor }       from '../agents/intent-budgets'
 import { runAggregator }    from '../orchestrator/aggregator'
 import { presenter }        from '../core/slack'
 import { getTokenSpend }    from '../memory/postgres'
@@ -61,13 +63,22 @@ const worker = new Worker<AgentJob>(
           await withJobWatchdog(() => runOrchestrator(task, tenant), 5 * 60_000, 'orchestrator', task.id)
           break
 
-        case 'subagent':
+        case 'subagent': {
           if (!subTaskId) throw new Error('subTaskId missing on subagent job')
-          // 12 min cap: clean specialists finish in ~5 min. 12 gives 2.3x
-          // headroom for slow LLM responses or extra tool calls, but caps
-          // the silent-hang failure mode at a bounded burn.
-          await withJobWatchdog(() => runSubagent(task, subTaskId, tenant), 12 * 60_000, 'subagent', task.id)
+          // Cost-efficiency (2026-07-24): the watchdog is now INTENT-AWARE.
+          // The old flat 12-minute cap sat BELOW the intent wall-clock
+          // budgets (daily_generation: 40min, weekly_audit: 30min), so the
+          // watchdog killed every long run, BullMQ retried it from scratch,
+          // and the original promise kept burning tokens as a zombie in the
+          // background. Measured fallout: single tasks with 17 run_records
+          // and ~3M tokens. The watchdog must sit ABOVE the subagent's own
+          // wall-clock cap (which stops gracefully with a checkpoint) — it
+          // exists only to catch true hangs, not to govern run length.
+          const sub = await getSubTask(subTaskId)
+          const watchdogMs = budgetsFor(sub?.task_intent).wallClockMs + 5 * 60_000
+          await withJobWatchdog(() => runSubagent(task, subTaskId, tenant), watchdogMs, 'subagent', task.id)
           break
+        }
 
         case 'aggregate':
           // 5 min cap: synthesis LLM is already 3-min capped internally,
