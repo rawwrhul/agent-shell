@@ -798,6 +798,19 @@ function buildSubagentSystem(
   // generation playbook below references CMS tools by name; Webflow tenants
   // get the webflow_* set, everyone else the framer_* set.
   const isWebflowCms = Array.isArray(tenant.integrations) && tenant.integrations.includes('webflow')
+  // Unified action-count logic (2026-07-26 merge of two parallel sessions):
+  // - daily_action_cap (cost-efficiency session): hard per-run ceiling, article included.
+  // - bank_drain division of labour (this session): meta/link volume moved to the
+  //   cheap drain cycle — Webflow-only in v1, so Framer tenants still do that
+  //   work in-run (from the bank), just capped.
+  const drainActive  = isWebflowCms   // bank_drain v1 scope
+  const cappedTenant = tenant.autonomyLevel === 'full'
+    && typeof tenant.dailyActionCap === 'number' && tenant.dailyActionCap > 0
+  const actionCountText =
+    tenant.autonomyLevel !== 'full' ? '2-5'
+    : cappedTenant ? `at most ${tenant.dailyActionCap}`
+    : drainActive ? '2-4'
+    : '4-6'
   const cmsName      = isWebflowCms ? 'Webflow' : 'Framer'
   const cmsListTool  = isWebflowCms ? 'webflow_list_blog_items' : 'framer_list_blog_items'
   const cmsPrefix    = tenant.cmsPathPrefixes?.[0] ?? '/resources/'
@@ -896,14 +909,18 @@ This task is the morning cron run. Your job: produce real work for ${tenant.clie
 ## What good looks like
 
 By end of run, you've produced:
-  - **${tenant.autonomyLevel === 'full' ? '2-4' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
-    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky.
+  - **${actionCountText} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky.${cappedTenant ? `
 
-DIVISION OF LABOUR (2026-07-25 — respect it, it is why runs stopped failing): a separate daily bank_drain cycle now ships ~20 banked meta rewrites and internal links every morning at volume. DO NOT file webflow/framer_update_blog_meta or _add_internal_link actions from the bank — that work is already being executed cheaper and you would duplicate or churn-cap-block it. Your run owns what the drain cannot do:
+HARD LIMIT: ${tenant.dailyActionCap} propose_action calls this run, INCLUDING the article. Stop filing once you reach it even if more work is available.` : ''}
+
+${drainActive
+  ? `DIVISION OF LABOUR (2026-07-25 — respect it, it is why runs stopped failing): a separate daily bank_drain cycle ships ~20 banked meta rewrites and internal links every morning at volume. DO NOT file ${cmsMetaTool} or ${cmsLinkTool} actions from the bank — that work is already being executed cheaper and you would duplicate or churn-cap-block it. Your run owns what the drain cannot do:
   1. THE ARTICLE (primary — full playbook below).
   2. ONE body-copy strengthening from the bank's copy_optimise entries (the detail JSON includes secondary_gap_keywords to weave in) — this is LLM-heavy work that belongs to you, not the drain.
   3. Incidental fixes ONLY on pages you already touched this run (e.g. missing alt text on a page you read).
 Exception: if you find a genuinely NEW meta/link problem NOT in the bank (check query_opportunities first), you may file it — discovery gaps are yours to catch.`
+  : `ACTION MIX (no bank_drain cycle runs for this CMS yet — on-page work is yours): the article plus the highest-scored entries from the bank (metadata_edit / copy_optimise / internal_link — scored and ranked overnight; DRAFT from them instead of rediscovering). Quality over coverage: pick only the entries with the strongest grounding.`}`
     : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.
