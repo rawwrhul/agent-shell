@@ -813,17 +813,6 @@ function buildSubagentSystem(
   // their job is to return findings as prose. Propose-changes-mode
   // specialists get the integration-tools-first + propose_action-as-only-
   // write-path guidance (the prompt patch authored 12 May).
-  // Per-tenant action cap (cost-efficiency, 2026-07-24). tenants.daily_action_cap
-  // caps propose_action calls per generation run, article included. Null =
-  // default playbook counts.
-  const cappedTenant = tenant.autonomyLevel === 'full'
-    && typeof tenant.dailyActionCap === 'number'
-    && tenant.dailyActionCap > 0
-  const actionCountText =
-    tenant.autonomyLevel !== 'full' ? '2-5'
-    : cappedTenant ? `at most ${tenant.dailyActionCap}`
-    : '8-12'
-
   const intentSection = taskIntent === 'investigate'
     ? `# Task mode: INVESTIGATE (read-only)
 
@@ -907,12 +896,10 @@ This task is the morning cron run. Your job: produce real work for ${tenant.clie
 ## What good looks like
 
 By end of run, you've produced:
-  - **${actionCountText} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
-    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only still applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky.${cappedTenant ? '' : ' But do NOT stop at 3-4 actions when the opportunity bank has more: an under-filed run leaves ranked-and-scored work sitting in the bank doing nothing.'}
+  - **${tenant.autonomyLevel === 'full' ? '8-12' : '2-5'} propose_action calls.** Each one is a concrete change you've already drafted (not a vague recommendation). ${tenant.autonomyLevel === 'full'
+    ? `These execute automatically — treat each one as if you were pressing the publish button yourself. Never file a change to a page you have not read this run, and never redo or reverse work from the last 7 days (check approval_requests + seo_work_log first). Grounded-only still applies — an adversarial critic reviews every filing and rejects anything ungrounded, off-lane, or risky — but do NOT stop at 3-4 actions when the opportunity bank has more: an under-filed run leaves ranked-and-scored work sitting in the bank doing nothing.
 
-${cappedTenant
-  ? `ACTION MIX (LEAN — this tenant is capped at ${tenant.dailyActionCap} actions per run, INCLUDING the article): the article plus the ${tenant.dailyActionCap! - 1} highest-scored entries from the bank (metadata_edit / copy_optimise / internal_link — they were scored and ranked overnight; DRAFT from them instead of rediscovering). Quality over coverage: pick only the entries with the strongest grounding. HARD LIMIT — do not exceed ${tenant.dailyActionCap} propose_action calls this run, and stop filing once you reach it even if the bank has more.`
-  : `ACTION MIX (aggressive on the compounding levers): aim per run for AT LEAST 3 meta title/description rewrites, 3 internal links, and 1 body-copy strengthening of an existing page (pull from the copy_optimise entries in the bank — the detail JSON includes secondary_gap_keywords to weave in), PLUS the one article. The bank's metadata_edit / copy_optimise / internal_link entries were scored and ranked overnight — DRAFT from them instead of rediscovering. Alt-text fixes no longer count toward the mix: the backlog is nearly exhausted; file them only when you touch a page anyway.`}`
+ACTION MIX (aggressive on the compounding levers): aim per run for AT LEAST 3 meta title/description rewrites, 3 internal links, and 1 body-copy strengthening of an existing page (pull from the copy_optimise entries in the bank — the detail JSON includes secondary_gap_keywords to weave in), PLUS the one article. The bank's metadata_edit / copy_optimise / internal_link entries were scored and ranked overnight — DRAFT from them instead of rediscovering. Alt-text fixes no longer count toward the mix: the backlog is nearly exhausted; file them only when you touch a page anyway.`
     : 'The Slack approval card shows the operator a preview URL they can click and review before approving.'} The wording is plain English, not SEO jargon.
   - **3-5 seo_opportunities entries.** Each is a specific lead, target, or insight worth pursuing later — not a generic recommendation like "improve meta descriptions."
   - **One snapshot_metrics call** at some point in the run, so we have continuity for tomorrow's comparison.

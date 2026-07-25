@@ -166,7 +166,6 @@ async function resolve(row: TenantRow): Promise<TenantConfig> {
     businessBrief:             row.business_brief ?? undefined,
     operatorSlackUserId:       row.operator_slack_user_id ?? undefined,
     autonomyLevel:             row.autonomy_level ?? 'hitl',
-    dailyActionCap:            row.daily_action_cap ?? undefined,
     webflow_site_id:           row.webflow_site_id ?? undefined,
   }
 }
